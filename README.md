@@ -165,6 +165,10 @@ AGENTS.md · skills x5 · ext.tools x2 · ✓ Grep ×10 · ◐ Edit (12s) · ◐
   // 显示/隐藏元素
   "disabled": ["extCmds", "cost"],
 
+  // 调试：把响应中的限额相关 header 落盘到 ~/.pi/agent/pi-agent-hud-headers.jsonl
+  // （也可用环境变量 PI_HUD_DEBUG_HEADERS=1 开启）
+  "debugDumpHeaders": false,
+
   // 或只显示指定元素（二选一）
   // "enabled": ["model", "project", "git", "contextBar", "elapsed", "tokens"]
 }
@@ -187,6 +191,8 @@ AGENTS.md · skills x5 · ext.tools x2 · ✓ Grep ×10 · ◐ Edit (12s) · ◐
 | `tokens` | Token 明细 | ✅ |
 | `cost` | 费用 | ✅ |
 | `rateLimit` | ⚡ API 额度剩余（Anthropic/OpenAI 自动检测） | ✅ |
+| `plan5h` | ⏳ Coding Plan 5小时窗口用量（Claude 订阅 / Codex OAuth） | ✅ |
+| `planWeek` | 📅 Coding Plan 周窗口用量（Claude 订阅 / Codex OAuth） | ✅ |
 | `toolStats` | 工具调用统计 | ✅ |
 | `runningTools` | 正在执行的工具 | ✅ |
 | `runningAgents` | 正在运行的 Agent | ✅ |
@@ -194,6 +200,23 @@ AGENTS.md · skills x5 · ext.tools x2 · ✓ Grep ×10 · ◐ Edit (12s) · ◐
 | `historyHint` | Ctrl+H 历史提示 | ✅ |
 
 完整配置示例见 [examples/pi-agent-hud.json](examples/pi-agent-hud.json)。
+
+## Coding Plan 用量（5小时 / 周限额）
+
+使用订阅配额（Claude Pro/Max 订阅、ChatGPT Codex OAuth）时，HUD 会从响应头自动解析两个配额窗口并显示：
+
+```
+⏳5h 42% ↻2h15m · 📅wk 18% ↻3d4h
+```
+
+- **Claude 订阅（OAuth）**：解析 `anthropic-ratelimit-unified-5h-*` / `-7d-*` 响应头
+- **Codex（ChatGPT OAuth）**：解析 `x-codex-primary-*`（主窗口）/ `x-codex-secondary-*`（周窗口）响应头，窗口时长由服务端返回，自动适配
+- **GLM Coding Plan（智谱，zai-coding-cn）**：响应头不含配额，HUD 每 5 分钟轮询 `open.bigmodel.cn/api/monitor/usage/quota/limit`（从环境变量 `ZAI_CODING_CN_API_KEY` 或 `~/.pi/agent/auth.json` 读取 key）
+- **MiniMax Coding Plan（minimax / minimax-cn）**：同样无响应头配额，HUD 每 5 分钟轮询 `api.minimaxi.com/v1/api/openplatform/coding_plan/remains`（key 来自 `MINIMAX_API_KEY` 或 `auth.json`）
+- 颜色随用量变化：≤70% 绿 / >70% 黄 / >90% 红；`↻` 后为重置倒计时
+- 纯 API key（按量付费）没有 5h/周配额概念，这两个元素会自动隐藏，仅显示 `rateLimit`
+
+不确定账号返回哪些头？开启 `"debugDumpHeaders": true`（或环境变量 `PI_HUD_DEBUG_HEADERS=1`），所有限额相关响应头会记录到 `~/.pi/agent/pi-agent-hud-headers.jsonl`。
 
 ## 网格布局
 

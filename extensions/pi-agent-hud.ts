@@ -12,7 +12,8 @@
  * Extensible: users can register custom HUD items via pi-agent-hud-plugins/
  */
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -39,6 +40,8 @@ type HudElement =
 	| "tokens"         // Line 2: ↑12.5k ↓3.2k
 	| "cost"           // Line 2: $0.042
 	| "rateLimit"      // Line 2: ⚡ 85% (Anthropic/OpenAI rate limit)
+	| "plan5h"         // Line 2: ⏳5h 42% ↻2h15m (coding plan 5-hour window)
+	| "planWeek"       // Line 2: 📅wk 18% ↻3d (coding plan weekly window)
 	| "toolStats"      // Line 2: ✓ Grep ×10
 	| "runningTools"   // Line 2: ◐ Edit (12s)
 	| "runningAgents"  // Line 2: ◐ agent (2m 15s)
@@ -76,6 +79,12 @@ interface HudConfig {
 	 * Elements not listed here auto-distribute left-to-right, top-to-bottom.
 	 */
 	placement?: Record<string, Placement>;
+	/**
+	 * Dump rate-limit related response headers to
+	 * ~/.pi/agent/pi-agent-hud-headers.jsonl for discovery.
+	 * Can also be enabled via env PI_HUD_DEBUG_HEADERS=1. Default: false.
+	 */
+	debugDumpHeaders?: boolean;
 }
 
 /** Context data passed to custom HUD plugins */
@@ -100,6 +109,8 @@ interface HudContext {
 	cwd: string;
 	sessionStart: number;
 	rateLimitInfo?: { provider: string; tokenRemaining: number; tokenLimit: number; requestRemaining: number; requestLimit: number; capturedAt: number };
+	/** Coding plan (subscription) quota usage: 5-hour and weekly windows */
+	planUsage?: PlanUsageInfo;
 	/** Agent plan: parsed steps from assistant plan message */
 	planSteps: Array<{ text: string; done: boolean; toolName?: string }>;
 	/** Number of agent turns completed */
@@ -752,6 +763,183 @@ interface RateLimitInfo {
 	capturedAt: number;
 }
 
+/** Usage of one coding-plan quota window (e.g. 5-hour or weekly) */
+interface PlanWindowUsage {
+	/** Used percent 0-100 */
+	usedPercent: number;
+	/** Window length in minutes, if reported by the server */
+	windowMinutes?: number;
+	/** When the window resets (Unix ms), if reported */
+	resetAt?: number;
+}
+
+/** Coding plan (subscription) quota usage, parsed from response headers */
+interface PlanUsageInfo {
+	/** Header source: "codex" (ChatGPT OAuth) or "anthropic" (Claude subscription) */
+	source: string;
+	fiveHour?: PlanWindowUsage;
+	weekly?: PlanWindowUsage;
+	capturedAt: number;
+}
+
+/** Parse a reset header: epoch seconds/ms or ISO date string → Unix ms */
+function parseResetHeader(value: string | undefined): number | undefined {
+	if (!value) return undefined;
+	const n = Number(value);
+	if (Number.isFinite(n) && n > 0) {
+		return n < 1e12 ? n * 1000 : n; // epoch seconds vs ms
+	}
+	const t = Date.parse(value);
+	return Number.isNaN(t) ? undefined : t;
+}
+
+/** Parse a utilization header: fraction (0-1) or percent (0-100) → percent */
+function parseUtilizationHeader(value: string | undefined): number | undefined {
+	if (!value) return undefined;
+	const n = Number(value);
+	if (!Number.isFinite(n) || n < 0) return undefined;
+	return n <= 1 ? n * 100 : n;
+}
+
+/** Human label for a window length in minutes: 300 → "5h", 10080 → "wk" */
+function formatWindowLabel(minutes: number): string {
+	if (minutes % (7 * 24 * 60) === 0) return "wk";
+	if (minutes % (24 * 60) === 0) return `${minutes / (24 * 60)}d`;
+	if (minutes % 60 === 0) return `${minutes / 60}h`;
+	return `${minutes}m`;
+}
+
+// ============================================================================
+// Coding plan (subscription) quota providers
+// ============================================================================
+// Data-driven registry: adding support for a new provider = one entry below.
+// Each entry declares where to find the API key, which endpoint to poll, and
+// how to normalize the response into 5h / weekly windows.
+//
+// NOTE: Kimi (kimi-code / moonshot) is intentionally NOT listed — its plan
+// quota is only rendered in Kimi's own web console; there is no public API
+// to query it (as of 2026-07). Add an entry here once an endpoint exists.
+
+/** Declarative spec for one coding-plan quota provider */
+interface PlanProviderSpec {
+	/** pi provider id(s) this spec handles (ctx.model.provider) */
+	providers: string[];
+	/** Environment variables tried first for the API key, in order */
+	envKeys: string[];
+	/** Provider names in ~/.pi/agent/auth.json tried after env */
+	authNames: string[];
+	/** Quota endpoint URL */
+	url: string;
+	/** Request headers given the resolved API key */
+	headers: (key: string) => Record<string, string>;
+	/** Normalize response JSON → 5h/weekly windows; undefined = no usable data */
+	parse: (json: any) => { fiveHour?: PlanWindowUsage; weekly?: PlanWindowUsage } | undefined;
+}
+
+/** Resolve a plan provider's API key: env first, then ~/.pi/agent/auth.json */
+function resolvePlanKey(spec: PlanProviderSpec): string | undefined {
+	for (const env of spec.envKeys) {
+		if (process.env[env]) return process.env[env];
+	}
+	try {
+		const auth = JSON.parse(readFileSync(join(homedir(), ".pi", "agent", "auth.json"), "utf8"));
+		for (const name of spec.authNames) {
+			const entry = auth[name];
+			if (entry?.type === "api_key" && entry.key) return entry.key;
+		}
+	} catch { /* ignore */ }
+	return undefined;
+}
+
+/** Registered coding-plan quota providers */
+const PLAN_PROVIDERS: PlanProviderSpec[] = [
+	{
+		// GLM Coding Plan (z.ai 国内版): GET /api/monitor/usage/quota/limit
+		// TOKENS_LIMIT entries: unit 3 = hour-window (number = hours, e.g. 5h), unit 6 = day-window (number = days, e.g. 7d)
+		providers: ["zai-coding-cn"],
+		envKeys: ["ZAI_CODING_CN_API_KEY"],
+		authNames: ["zai-coding-cn"],
+		url: "https://open.bigmodel.cn/api/monitor/usage/quota/limit",
+		headers: (key) => ({ Authorization: `Bearer ${key}` }),
+		parse: (json) => {
+			const limits = json?.data?.limits;
+			if (!Array.isArray(limits)) return undefined;
+			let fiveHour: PlanWindowUsage | undefined;
+			let weekly: PlanWindowUsage | undefined;
+			for (const l of limits) {
+				if (l?.type !== "TOKENS_LIMIT") continue;
+				const w: PlanWindowUsage = {
+					usedPercent: typeof l.percentage === "number" ? l.percentage : 0,
+					resetAt: typeof l.nextResetTime === "number" ? l.nextResetTime : undefined,
+				};
+				if (l.unit === 3) {
+					fiveHour = { ...w, windowMinutes: (l.number || 5) * 60 };
+				} else if (l.unit === 6) {
+					weekly = { ...w, windowMinutes: (l.number || 1) * 7 * 24 * 60 };
+				}
+			}
+			return fiveHour || weekly ? { fiveHour, weekly } : undefined;
+		},
+	},
+	{
+		// MiniMax Coding Plan: GET /v1/api/openplatform/coding_plan/remains
+		// Uses the "general" model entry: current_interval = 5h window, current_weekly = weekly window.
+		// Percentages are REMAINING, converted to used.
+		providers: ["minimax", "minimax-cn"],
+		envKeys: ["MINIMAX_API_KEY", "MINIMAX_CN_API_KEY"],
+		authNames: ["minimax", "minimax-cn"],
+		url: "https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains",
+		headers: (key) => ({ Authorization: `Bearer ${key}` }),
+		parse: (json) => {
+			const general = json?.model_remains?.find((m: any) => m?.model_name === "general") ?? json?.model_remains?.[0];
+			if (!general) return undefined;
+			const fiveHour: PlanWindowUsage | undefined = typeof general.current_interval_remaining_percent === "number" ? {
+				usedPercent: 100 - general.current_interval_remaining_percent,
+				windowMinutes: 300,
+				resetAt: typeof general.end_time === "number" ? general.end_time : undefined,
+			} : undefined;
+			const weekly: PlanWindowUsage | undefined = typeof general.current_weekly_remaining_percent === "number" ? {
+				usedPercent: 100 - general.current_weekly_remaining_percent,
+				windowMinutes: 7 * 24 * 60,
+				resetAt: typeof general.weekly_end_time === "number" ? general.weekly_end_time : undefined,
+			} : undefined;
+			return fiveHour || weekly ? { fiveHour, weekly } : undefined;
+		},
+	},
+];
+
+/** Find the plan provider spec handling a pi provider id */
+function findPlanProvider(provider: string | undefined): PlanProviderSpec | undefined {
+	return provider ? PLAN_PROVIDERS.find((p) => p.providers.includes(provider)) : undefined;
+}
+
+/** Poll a plan provider's quota endpoint; `source` is normalized by the caller */
+async function pollPlanProvider(spec: PlanProviderSpec): Promise<PlanUsageInfo | undefined> {
+	const key = resolvePlanKey(spec);
+	if (!key) return undefined;
+	try {
+		const res = await fetch(spec.url, {
+			headers: spec.headers(key),
+			signal: AbortSignal.timeout(10_000),
+		});
+		if (!res.ok) return undefined;
+		const windows = spec.parse(await res.json());
+		if (windows) {
+			return { source: spec.providers[0], ...windows, capturedAt: Date.now() };
+		}
+	} catch { /* network best-effort */ }
+	return undefined;
+}
+
+/** Countdown until a reset timestamp: "2h15m", "3d4h", "now" if past */
+function formatResetCountdown(resetAt: number): string {
+	const ms = resetAt - Date.now();
+	if (ms <= 0) return "now";
+	const d = Math.floor(ms / 86_400_000);
+	if (d >= 1) return `${d}d${Math.floor((ms % 86_400_000) / 3_600_000)}h`;
+	return formatDuration(ms);
+}
+
 /** Normalize header names to lowercase for case-insensitive lookup */
 function getHeader(headers: Record<string, string>, name: string): string | undefined {
 	// Try exact match first, then case-insensitive
@@ -857,6 +1045,11 @@ export default function (pi: ExtensionAPI) {
 
 	// Rate limit tracking — updated from after_provider_response headers
 	let rateLimitInfo: RateLimitInfo | undefined;
+	// Coding plan (subscription) quota tracking — 5h / weekly windows
+	let planUsage: PlanUsageInfo | undefined;
+	// Current model provider (tracked for provider-specific quota polling)
+	let currentProvider: string | undefined;
+	let planPollInFlight = false;
 
 	let plugins: HudPlugin[] = [];
 
@@ -940,6 +1133,7 @@ export default function (pi: ExtensionAPI) {
 		for (const k of Object.keys(toolCatCounts)) delete toolCatCounts[k];
 		turnLog.length = 0;
 		rateLimitInfo = undefined;
+	planUsage = undefined;
 		cachedCwd = "";
 		refreshContextFiles(ctx.cwd);
 
@@ -964,6 +1158,27 @@ export default function (pi: ExtensionAPI) {
 					const model = ctx.model;
 					const modelId = model?.id || "no-model";
 					const branch = footerData.getGitBranch();
+
+					// Provider switched (e.g. via /model): drop stale plan quota info
+					const provider = (model as { provider?: string } | undefined)?.provider;
+					if (provider !== currentProvider) {
+						currentProvider = provider;
+						planUsage = undefined;
+					}
+
+					// Coding plan quota endpoints (GLM / MiniMax): poll every 5 min (headers carry nothing)
+					const planSpec = findPlanProvider(currentProvider);
+					if (planSpec) {
+						const stale = !planUsage || planUsage.source !== currentProvider || Date.now() - planUsage.capturedAt > 5 * 60_000;
+						if (stale && !planPollInFlight) {
+							planPollInFlight = true;
+							pollPlanProvider(planSpec).then((info) => {
+								if (info && currentProvider && findPlanProvider(currentProvider)) {
+									planUsage = { ...info, source: currentProvider };
+								}
+							}).finally(() => { planPollInFlight = false; });
+						}
+					}
 					const ctxUsage = ctx.getContextUsage();
 					const ctxPercent = ctxUsage?.percent ?? 0;
 
@@ -1015,6 +1230,7 @@ export default function (pi: ExtensionAPI) {
 						planSteps,
 						turnCount,
 						subagentTasks,
+						planUsage,
 					};
 
 					// ================================================================
@@ -1135,6 +1351,31 @@ export default function (pi: ExtensionAPI) {
 							key: "cost", defaultLine: 1, order: 5,
 							fixedCol: config.placement?.cost?.col,
 							render: () => theme.fg("dim", `$${totalCost.toFixed(3)}`),
+						});
+					}
+
+					if (isEnabled("plan5h") && planUsage?.fiveHour) {
+						const w = planUsage.fiveHour;
+						const label = w.windowMinutes ? formatWindowLabel(w.windowMinutes) : "5h";
+						line2Items.push({
+							key: "plan5h", defaultLine: 1, order: 6,
+							fixedCol: config.placement?.plan5h?.col,
+							render: () => {
+								const reset = w.resetAt ? formatResetCountdown(w.resetAt) : "";
+								return `${ctxColor(theme, w.usedPercent, `⏳${label} ${Math.round(w.usedPercent)}%`)}${reset ? theme.fg("dim", ` ↻${reset}`) : ""}`;
+							},
+						});
+					}
+					if (isEnabled("planWeek") && planUsage?.weekly) {
+						const w = planUsage.weekly;
+						const label = w.windowMinutes ? formatWindowLabel(w.windowMinutes) : "wk";
+						line2Items.push({
+							key: "planWeek", defaultLine: 1, order: 7,
+							fixedCol: config.placement?.planWeek?.col,
+							render: () => {
+								const reset = w.resetAt ? formatResetCountdown(w.resetAt) : "";
+								return `${ctxColor(theme, w.usedPercent, `📅${label} ${Math.round(w.usedPercent)}%`)}${reset ? theme.fg("dim", ` ↻${reset}`) : ""}`;
+							},
 						});
 					}
 
@@ -1464,6 +1705,20 @@ export default function (pi: ExtensionAPI) {
 	// ---- Track provider rate limits from response headers ----
 	pi.on("after_provider_response", async (event) => {
 		const headers = event.headers;
+
+		// Debug: dump rate-limit related headers for discovery
+		// (enabled via config.debugDumpHeaders or env PI_HUD_DEBUG_HEADERS=1)
+		if (headers && (config.debugDumpHeaders || process.env.PI_HUD_DEBUG_HEADERS)) {
+			try {
+				const dir = join(homedir(), ".pi", "agent");
+				mkdirSync(dir, { recursive: true });
+				appendFileSync(
+					join(dir, "pi-agent-hud-headers.jsonl"),
+					JSON.stringify({ ts: new Date().toISOString(), status: event.status, headers }) + "\n",
+				);
+			} catch { /* best-effort debug logging */ }
+		}
+
 		if (!headers || event.status >= 400) return;
 
 		const isAnthropic = !!getHeader(headers, "anthropic-ratelimit-tokens-limit");
@@ -1484,6 +1739,47 @@ export default function (pi: ExtensionAPI) {
 			const requestRemaining = parseInt(getHeader(headers, "x-ratelimit-remaining-requests") || "0", 10);
 			if (tokenLimit > 0 || requestLimit > 0) {
 				rateLimitInfo = { provider: "openai", tokenRemaining, tokenLimit, requestRemaining, requestLimit, capturedAt: Date.now() };
+			}
+		}
+
+		// ---- Coding plan (subscription) quota windows: 5h / weekly ----
+		// Codex via ChatGPT OAuth: x-codex-primary-* (~5h) and x-codex-secondary-* (weekly)
+		const codexPrimaryUsed = parseUtilizationHeader(getHeader(headers, "x-codex-primary-used-percent"));
+		const codexSecondaryUsed = parseUtilizationHeader(getHeader(headers, "x-codex-secondary-used-percent"));
+		if (codexPrimaryUsed !== undefined || codexSecondaryUsed !== undefined) {
+			planUsage = {
+				source: "codex",
+				fiveHour: codexPrimaryUsed !== undefined ? {
+					usedPercent: codexPrimaryUsed,
+					windowMinutes: Number(getHeader(headers, "x-codex-primary-window-minutes")) || undefined,
+					resetAt: parseResetHeader(getHeader(headers, "x-codex-primary-reset-at")),
+				} : undefined,
+				weekly: codexSecondaryUsed !== undefined ? {
+					usedPercent: codexSecondaryUsed,
+					windowMinutes: Number(getHeader(headers, "x-codex-secondary-window-minutes")) || undefined,
+					resetAt: parseResetHeader(getHeader(headers, "x-codex-secondary-reset-at")),
+				} : undefined,
+				capturedAt: Date.now(),
+			};
+		} else {
+			// Claude subscription (OAuth): anthropic-ratelimit-unified-{5h,7d}-{utilization,reset}
+			const a5h = parseUtilizationHeader(getHeader(headers, "anthropic-ratelimit-unified-5h-utilization"));
+			const a7d = parseUtilizationHeader(getHeader(headers, "anthropic-ratelimit-unified-7d-utilization"));
+			if (a5h !== undefined || a7d !== undefined) {
+				planUsage = {
+					source: "anthropic",
+					fiveHour: a5h !== undefined ? {
+						usedPercent: a5h,
+						windowMinutes: 300,
+						resetAt: parseResetHeader(getHeader(headers, "anthropic-ratelimit-unified-5h-reset")),
+					} : undefined,
+					weekly: a7d !== undefined ? {
+						usedPercent: a7d,
+						windowMinutes: 7 * 24 * 60,
+						resetAt: parseResetHeader(getHeader(headers, "anthropic-ratelimit-unified-7d-reset")),
+					} : undefined,
+					capturedAt: Date.now(),
+				};
 			}
 		}
 	});

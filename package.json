@@ -20,5 +20,8 @@
   },
   "scripts": {
     "check": "tsc --noEmit --skipLibCheck extensions/pi-agent-hud.ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
   }
 }

@@ -152,6 +152,10 @@ Configure via `.pi/pi-agent-hud.json` (project) or `~/.pi/agent/pi-agent-hud.jso
   // Show/hide elements
   "disabled": ["extCmds", "cost"],
 
+  // Debug: dump rate-limit related response headers to
+  // ~/.pi/agent/pi-agent-hud-headers.jsonl (or set env PI_HUD_DEBUG_HEADERS=1)
+  "debugDumpHeaders": false,
+
   // Or only show specified elements (mutually exclusive with disabled)
   // "enabled": ["model", "project", "git", "contextBar", "elapsed", "tokens"]
 }
@@ -174,6 +178,8 @@ Configure via `.pi/pi-agent-hud.json` (project) or `~/.pi/agent/pi-agent-hud.jso
 | `tokens` | Token breakdown | ✅ |
 | `cost` | Session cost | ✅ |
 | `rateLimit` | ⚡ API rate limit remaining (Anthropic/OpenAI auto-detected) | ✅ |
+| `plan5h` | ⏳ Coding plan 5-hour window usage (Claude subscription / Codex OAuth) | ✅ |
+| `planWeek` | 📅 Coding plan weekly window usage (Claude subscription / Codex OAuth) | ✅ |
 | `toolStats` | Completed tool stats | ✅ |
 | `runningTools` | Running tools | ✅ |
 | `runningAgents` | Running agents | ✅ |
@@ -181,6 +187,23 @@ Configure via `.pi/pi-agent-hud.json` (project) or `~/.pi/agent/pi-agent-hud.jso
 | `historyHint` | Ctrl+H history hint | ✅ |
 
 See [examples/pi-agent-hud.json](examples/pi-agent-hud.json) for a full configuration example.
+
+## Coding Plan Usage (5-hour / Weekly Limits)
+
+When using subscription quotas (Claude Pro/Max, ChatGPT Codex OAuth), the HUD parses two quota windows from response headers and shows:
+
+```
+⏳5h 42% ↻2h15m · 📅wk 18% ↻3d4h
+```
+
+- **Claude subscription (OAuth)**: parses `anthropic-ratelimit-unified-5h-*` / `-7d-*` headers
+- **Codex (ChatGPT OAuth)**: parses `x-codex-primary-*` (primary window) / `x-codex-secondary-*` (weekly) headers; window lengths come from the server and adapt automatically
+- **GLM Coding Plan (zai-coding-cn)**: responses carry no quota headers, so the HUD polls `open.bigmodel.cn/api/monitor/usage/quota/limit` every 5 min (key from env `ZAI_CODING_CN_API_KEY` or `~/.pi/agent/auth.json`)
+- **MiniMax Coding Plan (minimax / minimax-cn)**: same — polls `api.minimaxi.com/v1/api/openplatform/coding_plan/remains` every 5 min (key from env `MINIMAX_API_KEY` or `auth.json`)
+- Color scales with usage: ≤70% green / >70% yellow / >90% red; `↻` shows the reset countdown
+- Plain API keys (pay-as-you-go) have no 5h/weekly quotas — these elements stay hidden and only `rateLimit` is shown
+
+Not sure which headers your account returns? Enable `"debugDumpHeaders": true` (or env `PI_HUD_DEBUG_HEADERS=1`) to log all rate-limit related headers to `~/.pi/agent/pi-agent-hud-headers.jsonl`.
 
 ## Grid Layout
 

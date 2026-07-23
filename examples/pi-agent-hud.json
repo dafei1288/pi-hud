@@ -8,8 +8,12 @@
   "// tokenThreshold": 85,
 
   "// === Show / Hide Elements ===": "",
-  "// enabled": ["model", "project", "git", "thinking", "contextBar", "elapsed", "contextFiles", "skills", "extTools", "extCmds", "tokens", "cost", "toolStats", "runningTools", "runningAgents", "lastInput", "historyHint"],
+  "// enabled": ["model", "project", "git", "thinking", "contextBar", "elapsed", "contextFiles", "skills", "extTools", "extCmds", "tokens", "cost", "plan5h", "planWeek", "toolStats", "runningTools", "runningAgents", "lastInput", "historyHint"],
   "// disabled": ["extCmds"],
+
+  "// === Debug ===": "",
+  "// Dump rate-limit related response headers to ~/.pi/agent/pi-agent-hud-headers.jsonl": "",
+  "// debugDumpHeaders": true,
 
   "// === Layout (grid mode) ===": "",
   "// Array of column counts per line. Max 5 lines, each 1/2/4 columns.",
