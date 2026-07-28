@@ -2,7 +2,7 @@
  * pi-agent-hud Extension — claude-hud inspired status bar
  *
  * Line 1: [model] project git:(main* ↑2)    [████████░░] 39%    ⏱ 21m
- * Line 2: AGENTS.md · skills x5 · ext x2 · ↑12.5k ↓3.2k · $0.042 · ✓ Grep x10
+ * Line 2: AGENTS.md · skills x5 · ext x2 · ↑12.5k ↓3.2k · $0.042 · 💰 ¥12.50 · ✓ Grep x10
  * Line 3: ▸ how to build a REST API with authentication?
  *
  * Ctrl+H: Open session input history overlay
@@ -39,6 +39,7 @@ type HudElement =
 	| "extCmds"        // Line 2: cmds x3
 	| "tokens"         // Line 2: ↑12.5k ↓3.2k
 	| "cost"           // Line 2: $0.042
+	| "balance"        // Line 2: 💰 ¥12.50 (LLM account balance)
 	| "rateLimit"      // Line 2: ⚡ 85% (Anthropic/OpenAI rate limit)
 	| "plan5h"         // Line 2: ⏳5h 42% ↻2h15m (coding plan 5-hour window)
 	| "planWeek"       // Line 2: 📅wk 18% ↻3d (coding plan weekly window)
@@ -111,6 +112,8 @@ interface HudContext {
 	rateLimitInfo?: { provider: string; tokenRemaining: number; tokenLimit: number; requestRemaining: number; requestLimit: number; capturedAt: number };
 	/** Coding plan (subscription) quota usage: 5-hour and weekly windows */
 	planUsage?: PlanUsageInfo;
+	/** Account balance info for pay-per-use LLM providers */
+	balanceInfo?: BalanceInfo;
 	/** Agent plan: parsed steps from assistant plan message */
 	planSteps: Array<{ text: string; done: boolean; toolName?: string }>;
 	/** Number of agent turns completed */
@@ -782,6 +785,38 @@ interface PlanUsageInfo {
 	capturedAt: number;
 }
 
+/** Account balance info for pay-per-use LLM providers */
+interface BalanceInfo {
+	/** Provider id */
+	provider: string;
+	/** Balance label (e.g. "¥12.50") */
+	label: string;
+	/** Raw balance value for color threshold */
+	value: number;
+	/** Currency */
+	currency: string;
+	/** When this was captured (Unix ms) */
+	capturedAt: number;
+}
+
+/** Declarative spec for a balance provider (pay-per-use API account) */
+interface BalanceProviderSpec {
+	/** pi provider id(s) this spec handles */
+	providers: string[];
+	/** Environment variables tried first for the API key */
+	envKeys: string[];
+	/** Provider names in ~/.pi/agent/auth.json tried after env */
+	authNames: string[];
+	/** Provider id in ~/.pi/agent/models.json (providers.{id}.apiKey) tried after auth */
+	modelsJsonProvider?: string;
+	/** Balance endpoint URL */
+	url: string;
+	/** Request headers given the resolved API key */
+	headers: (key: string) => Record<string, string>;
+	/** Normalize response JSON → BalanceInfo, or undefined */
+	parse: (json: any) => BalanceInfo | undefined;
+}
+
 /** Parse a reset header: epoch seconds/ms or ISO date string → Unix ms */
 function parseResetHeader(value: string | undefined): number | undefined {
 	if (!value) return undefined;
@@ -816,9 +851,8 @@ function formatWindowLabel(minutes: number): string {
 // Each entry declares where to find the API key, which endpoint to poll, and
 // how to normalize the response into 5h / weekly windows.
 //
-// NOTE: Kimi (kimi-code / moonshot) is intentionally NOT listed — its plan
-// quota is only rendered in Kimi's own web console; there is no public API
-// to query it (as of 2026-07). Add an entry here once an endpoint exists.
+// NOTE: Kimi (kimi-code / moonshot) is no longer excluded — its public API
+// is available at api.kimi.com/coding/v1/usages (as of 2026-07).
 
 /** Declarative spec for one coding-plan quota provider */
 interface PlanProviderSpec {
@@ -828,6 +862,12 @@ interface PlanProviderSpec {
 	envKeys: string[];
 	/** Provider names in ~/.pi/agent/auth.json tried after env */
 	authNames: string[];
+	/**
+	 * Provider id in ~/.pi/agent/models.json (providers.{id}.apiKey) tried
+	 * after env/auth.json. Needed for providers like Kimi that store the key
+	 * in models.json rather than auth.json.
+	 */
+	modelsJsonProvider?: string;
 	/** Quota endpoint URL */
 	url: string;
 	/** Request headers given the resolved API key */
@@ -836,7 +876,7 @@ interface PlanProviderSpec {
 	parse: (json: any) => { fiveHour?: PlanWindowUsage; weekly?: PlanWindowUsage } | undefined;
 }
 
-/** Resolve a plan provider's API key: env first, then ~/.pi/agent/auth.json */
+/** Resolve a plan provider's API key: env → ~/.pi/agent/auth.json → ~/.pi/agent/models.json */
 function resolvePlanKey(spec: PlanProviderSpec): string | undefined {
 	for (const env of spec.envKeys) {
 		if (process.env[env]) return process.env[env];
@@ -848,6 +888,36 @@ function resolvePlanKey(spec: PlanProviderSpec): string | undefined {
 			if (entry?.type === "api_key" && entry.key) return entry.key;
 		}
 	} catch { /* ignore */ }
+	// Fallback: ~/.pi/agent/models.json providers.{id}.apiKey
+	if (spec.modelsJsonProvider) {
+		try {
+			const models = JSON.parse(readFileSync(join(homedir(), ".pi", "agent", "models.json"), "utf8"));
+			const key = models?.providers?.[spec.modelsJsonProvider]?.apiKey;
+			if (typeof key === "string" && key) return key;
+		} catch { /* ignore */ }
+	}
+	return undefined;
+}
+
+/** Resolve a key using the same 3-tier strategy as resolvePlanKey (env → auth.json → models.json) */
+function resolveBalanceKey(spec: BalanceProviderSpec): string | undefined {
+	for (const env of spec.envKeys) {
+		if (process.env[env]) return process.env[env];
+	}
+	try {
+		const auth = JSON.parse(readFileSync(join(homedir(), ".pi", "agent", "auth.json"), "utf8"));
+		for (const name of spec.authNames) {
+			const entry = auth[name];
+			if (entry?.type === "api_key" && entry.key) return entry.key;
+		}
+	} catch { /* ignore */ }
+	if (spec.modelsJsonProvider) {
+		try {
+			const models = JSON.parse(readFileSync(join(homedir(), ".pi", "agent", "models.json"), "utf8"));
+			const key = models?.providers?.[spec.modelsJsonProvider]?.apiKey;
+			if (typeof key === "string" && key) return key;
+		} catch { /* ignore */ }
+	}
 	return undefined;
 }
 
@@ -906,11 +976,98 @@ const PLAN_PROVIDERS: PlanProviderSpec[] = [
 			return fiveHour || weekly ? { fiveHour, weekly } : undefined;
 		},
 	},
+	{
+		// Kimi Coding Plan: GET /coding/v1/usages
+		// Top-level `usage` = weekly summary; limits[] carries per-window detail
+		// where window.duration+timeUnit identifies the window (300 MINUTES = 5h).
+		// Numeric fields may be strings; resetTime is ISO8601.
+		providers: ["kimi"],
+		envKeys: ["KIMI_CODE_API_KEY", "KIMI_API_KEY"],
+		authNames: ["kimi"],
+		modelsJsonProvider: "kimi",
+		url: "https://api.kimi.com/coding/v1/usages",
+		headers: (key) => ({ Authorization: `Bearer ${key}` }),
+		parse: (json) => {
+			const row = (d: any): PlanWindowUsage | undefined => {
+				if (!d || typeof d !== "object") return undefined;
+				const num = (v: any): number | undefined => {
+					const n = Number(v);
+					return !Number.isNaN(n) ? n : undefined;
+				};
+				const limit = num(d.limit);
+				const used = num(d.used)
+					?? (limit != null ? (() => { const r = num(d.remaining); return r != null ? Math.max(0, limit - r) : undefined; })() : undefined);
+				if (used == null && limit == null) return undefined;
+				const resetRaw = d.reset_at ?? d.resetAt ?? d.reset_time ?? d.resetTime;
+				const resetAt = typeof resetRaw === "string" ? (Date.parse(resetRaw) || undefined)
+					: typeof resetRaw === "number" ? (Number.isFinite(resetRaw) ? resetRaw : undefined) : undefined;
+				const usedPercent = limit && limit > 0 ? ((used ?? 0) / limit) * 100 : 0;
+				return { usedPercent, resetAt };
+			};
+			const toMinutes = (dur?: number, unit?: string): number | undefined => {
+				if (typeof dur !== "number") return undefined;
+				const u = (unit || "").toUpperCase();
+				if (u.includes("DAY")) return dur * 1440;
+				if (u.includes("HOUR")) return dur * 60;
+				return dur; // MINUTES (default)
+			};
+			let fiveHour: PlanWindowUsage | undefined;
+			let weekly: PlanWindowUsage | undefined;
+			const topUsage = row(json?.usage);
+			if (topUsage) weekly = { ...topUsage, windowMinutes: 7 * 24 * 60 };
+			if (Array.isArray(json?.limits)) {
+				for (const item of json.limits) {
+					const w = row(item?.detail ?? item);
+					if (!w) continue;
+					const mins = toMinutes(item?.window?.duration ?? item?.duration, item?.window?.timeUnit ?? item?.timeUnit);
+					if (mins && mins <= 24 * 60) {
+						fiveHour ??= { ...w, windowMinutes: mins };
+					} else {
+						weekly ??= { ...w, windowMinutes: mins ?? 7 * 24 * 60 };
+					}
+				}
+			}
+			return fiveHour || weekly ? { fiveHour, weekly } : undefined;
+		},
+	},
+];
+
+/** Registered balance providers (pay-per-use API accounts) */
+const BALANCE_PROVIDERS: BalanceProviderSpec[] = [
+	{
+		// DeepSeek: GET /user/balance
+		// Returns { is_available, balance_infos: [{ currency, total_balance, ... }] }
+		providers: ["deepseek"],
+		envKeys: ["DEEPSEEK_API_KEY"],
+		authNames: ["deepseek"],
+		url: "https://api.deepseek.com/user/balance",
+		headers: (key) => ({ Authorization: `Bearer ${key}` }),
+		parse: (json) => {
+			if (!json?.is_available) return undefined;
+			const info = json?.balance_infos?.[0];
+			if (!info) return undefined;
+			const total = parseFloat(info.total_balance);
+			if (isNaN(total)) return undefined;
+			const currency = info.currency === "CNY" ? "¥" : info.currency === "USD" ? "$" : info.currency;
+			return {
+				provider: "deepseek",
+				label: `${currency}${total.toFixed(2)}`,
+				value: total,
+				currency: info.currency,
+				capturedAt: Date.now(),
+			};
+		},
+	},
 ];
 
 /** Find the plan provider spec handling a pi provider id */
 function findPlanProvider(provider: string | undefined): PlanProviderSpec | undefined {
 	return provider ? PLAN_PROVIDERS.find((p) => p.providers.includes(provider)) : undefined;
+}
+
+/** Find the balance provider spec handling a pi provider id */
+function findBalanceProvider(provider: string | undefined): BalanceProviderSpec | undefined {
+	return provider ? BALANCE_PROVIDERS.find((p) => p.providers.includes(provider)) : undefined;
 }
 
 /** Poll a plan provider's quota endpoint; `source` is normalized by the caller */
@@ -927,6 +1084,21 @@ async function pollPlanProvider(spec: PlanProviderSpec): Promise<PlanUsageInfo |
 		if (windows) {
 			return { source: spec.providers[0], ...windows, capturedAt: Date.now() };
 		}
+	} catch { /* network best-effort */ }
+	return undefined;
+}
+
+/** Poll a balance provider's endpoint */
+async function pollBalanceProvider(spec: BalanceProviderSpec): Promise<BalanceInfo | undefined> {
+	const key = resolveBalanceKey(spec);
+	if (!key) return undefined;
+	try {
+		const res = await fetch(spec.url, {
+			headers: spec.headers(key),
+			signal: AbortSignal.timeout(10_000),
+		});
+		if (!res.ok) return undefined;
+		return spec.parse(await res.json());
 	} catch { /* network best-effort */ }
 	return undefined;
 }
@@ -1047,9 +1219,12 @@ export default function (pi: ExtensionAPI) {
 	let rateLimitInfo: RateLimitInfo | undefined;
 	// Coding plan (subscription) quota tracking — 5h / weekly windows
 	let planUsage: PlanUsageInfo | undefined;
+	// Account balance tracking for pay-per-use providers
+	let balanceInfo: BalanceInfo | undefined;
 	// Current model provider (tracked for provider-specific quota polling)
 	let currentProvider: string | undefined;
 	let planPollInFlight = false;
+	let balancePollInFlight = false;
 
 	let plugins: HudPlugin[] = [];
 
@@ -1134,6 +1309,7 @@ export default function (pi: ExtensionAPI) {
 		turnLog.length = 0;
 		rateLimitInfo = undefined;
 	planUsage = undefined;
+	balanceInfo = undefined;
 		cachedCwd = "";
 		refreshContextFiles(ctx.cwd);
 
@@ -1159,14 +1335,15 @@ export default function (pi: ExtensionAPI) {
 					const modelId = model?.id || "no-model";
 					const branch = footerData.getGitBranch();
 
-					// Provider switched (e.g. via /model): drop stale plan quota info
+					// Provider switched (e.g. via /model): drop stale plan quota & balance info
 					const provider = (model as { provider?: string } | undefined)?.provider;
 					if (provider !== currentProvider) {
 						currentProvider = provider;
 						planUsage = undefined;
+						balanceInfo = undefined;
 					}
 
-					// Coding plan quota endpoints (GLM / MiniMax): poll every 5 min (headers carry nothing)
+					// Coding plan quota endpoints (GLM / MiniMax / Kimi): poll every 5 min
 					const planSpec = findPlanProvider(currentProvider);
 					if (planSpec) {
 						const stale = !planUsage || planUsage.source !== currentProvider || Date.now() - planUsage.capturedAt > 5 * 60_000;
@@ -1177,6 +1354,20 @@ export default function (pi: ExtensionAPI) {
 									planUsage = { ...info, source: currentProvider };
 								}
 							}).finally(() => { planPollInFlight = false; });
+						}
+					}
+
+					// Account balance endpoints (DeepSeek etc.): poll every 5 min
+					const balSpec = findBalanceProvider(currentProvider);
+					if (balSpec) {
+						const stale = !balanceInfo || balanceInfo.provider !== currentProvider || Date.now() - balanceInfo.capturedAt > 5 * 60_000;
+						if (stale && !balancePollInFlight) {
+							balancePollInFlight = true;
+							pollBalanceProvider(balSpec).then((info) => {
+								if (info && currentProvider && findBalanceProvider(currentProvider)) {
+									balanceInfo = info;
+								}
+							}).finally(() => { balancePollInFlight = false; });
 						}
 					}
 					const ctxUsage = ctx.getContextUsage();
@@ -1231,6 +1422,7 @@ export default function (pi: ExtensionAPI) {
 						turnCount,
 						subagentTasks,
 						planUsage,
+						balanceInfo,
 					};
 
 					// ================================================================
@@ -1353,12 +1545,25 @@ export default function (pi: ExtensionAPI) {
 							render: () => theme.fg("dim", `$${totalCost.toFixed(3)}`),
 						});
 					}
+					if (isEnabled("balance") && balanceInfo) {
+						const ageMs = Date.now() - balanceInfo.capturedAt;
+						const fresh = ageMs < 10 * 60_000; // fresh if <10min old
+						const color: "success" | "warning" | "dim" = !fresh ? "dim"
+							: balanceInfo.value <= 0 ? "warning"
+							: balanceInfo.value < 10 ? "warning"
+							: "success";
+						line2Items.push({
+							key: "balance", defaultLine: 1, order: 6,
+							fixedCol: config.placement?.balance?.col,
+							render: () => theme.fg(color, `💰 ${balanceInfo.label}`),
+						});
+					}
 
 					if (isEnabled("plan5h") && planUsage?.fiveHour) {
 						const w = planUsage.fiveHour;
 						const label = w.windowMinutes ? formatWindowLabel(w.windowMinutes) : "5h";
 						line2Items.push({
-							key: "plan5h", defaultLine: 1, order: 6,
+							key: "plan5h", defaultLine: 1, order: 7,
 							fixedCol: config.placement?.plan5h?.col,
 							render: () => {
 								const reset = w.resetAt ? formatResetCountdown(w.resetAt) : "";
@@ -1370,7 +1575,7 @@ export default function (pi: ExtensionAPI) {
 						const w = planUsage.weekly;
 						const label = w.windowMinutes ? formatWindowLabel(w.windowMinutes) : "wk";
 						line2Items.push({
-							key: "planWeek", defaultLine: 1, order: 7,
+							key: "planWeek", defaultLine: 1, order: 8,
 							fixedCol: config.placement?.planWeek?.col,
 							render: () => {
 								const reset = w.resetAt ? formatResetCountdown(w.resetAt) : "";

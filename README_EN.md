@@ -177,6 +177,7 @@ Configure via `.pi/pi-agent-hud.json` (project) or `~/.pi/agent/pi-agent-hud.jso
 | `extCmds` | Extension commands count | ✅ |
 | `tokens` | Token breakdown | ✅ |
 | `cost` | Session cost | ✅ |
+| `balance` | 💰 Account balance (DeepSeek & pay-per-use APIs) | ✅ |
 | `rateLimit` | ⚡ API rate limit remaining (Anthropic/OpenAI auto-detected) | ✅ |
 | `plan5h` | ⏳ Coding plan 5-hour window usage (Claude subscription / Codex OAuth) | ✅ |
 | `planWeek` | 📅 Coding plan weekly window usage (Claude subscription / Codex OAuth) | ✅ |
@@ -200,8 +201,21 @@ When using subscription quotas (Claude Pro/Max, ChatGPT Codex OAuth), the HUD pa
 - **Codex (ChatGPT OAuth)**: parses `x-codex-primary-*` (primary window) / `x-codex-secondary-*` (weekly) headers; window lengths come from the server and adapt automatically
 - **GLM Coding Plan (zai-coding-cn)**: responses carry no quota headers, so the HUD polls `open.bigmodel.cn/api/monitor/usage/quota/limit` every 5 min (key from env `ZAI_CODING_CN_API_KEY` or `~/.pi/agent/auth.json`)
 - **MiniMax Coding Plan (minimax / minimax-cn)**: same — polls `api.minimaxi.com/v1/api/openplatform/coding_plan/remains` every 5 min (key from env `MINIMAX_API_KEY` or `auth.json`)
+- **Kimi Coding Plan (kimi)**: same — polls `api.kimi.com/coding/v1/usages` every 5 min (key from env `KIMI_CODE_API_KEY`/`KIMI_API_KEY`, `auth.json`, or `~/.pi/agent/models.json` `providers.kimi.apiKey`)
 - Color scales with usage: ≤70% green / >70% yellow / >90% red; `↻` shows the reset countdown
 - Plain API keys (pay-as-you-go) have no 5h/weekly quotas — these elements stay hidden and only `rateLimit` is shown
+
+## Account Balance (pay-per-use APIs)
+
+When using pay-per-use APIs (e.g. DeepSeek), the HUD polls the balance endpoint every 5 min:
+
+```
+💰 ¥12.50
+```
+
+- **DeepSeek**: polls `api.deepseek.com/user/balance` (key from env `DEEPSEEK_API_KEY`, `auth.json`, or `models.json` `providers.deepseek.apiKey`)
+- Balance ≤0 shows red, <10 yellow, >10 green; dimmed when >10 min stale
+- Cleared automatically when switching providers
 
 Not sure which headers your account returns? Enable `"debugDumpHeaders": true` (or env `PI_HUD_DEBUG_HEADERS=1`) to log all rate-limit related headers to `~/.pi/agent/pi-agent-hud-headers.jsonl`.
 

@@ -190,6 +190,7 @@ AGENTS.md · skills x5 · ext.tools x2 · ✓ Grep ×10 · ◐ Edit (12s) · ◐
 | `extCmds` | 扩展命令数量 | ✅ |
 | `tokens` | Token 明细 | ✅ |
 | `cost` | 费用 | ✅ |
+| `balance` | 💰 账户余额（DeepSeek 等按量付费 API） | ✅ |
 | `rateLimit` | ⚡ API 额度剩余（Anthropic/OpenAI 自动检测） | ✅ |
 | `plan5h` | ⏳ Coding Plan 5小时窗口用量（Claude 订阅 / Codex OAuth） | ✅ |
 | `planWeek` | 📅 Coding Plan 周窗口用量（Claude 订阅 / Codex OAuth） | ✅ |
@@ -213,8 +214,21 @@ AGENTS.md · skills x5 · ext.tools x2 · ✓ Grep ×10 · ◐ Edit (12s) · ◐
 - **Codex（ChatGPT OAuth）**：解析 `x-codex-primary-*`（主窗口）/ `x-codex-secondary-*`（周窗口）响应头，窗口时长由服务端返回，自动适配
 - **GLM Coding Plan（智谱，zai-coding-cn）**：响应头不含配额，HUD 每 5 分钟轮询 `open.bigmodel.cn/api/monitor/usage/quota/limit`（从环境变量 `ZAI_CODING_CN_API_KEY` 或 `~/.pi/agent/auth.json` 读取 key）
 - **MiniMax Coding Plan（minimax / minimax-cn）**：同样无响应头配额，HUD 每 5 分钟轮询 `api.minimaxi.com/v1/api/openplatform/coding_plan/remains`（key 来自 `MINIMAX_API_KEY` 或 `auth.json`）
+- **Kimi Coding Plan（kimi）**：同样无响应头配额，HUD 每 5 分钟轮询 `api.kimi.com/coding/v1/usages`（key 依次从 `KIMI_CODE_API_KEY`/`KIMI_API_KEY`、`auth.json`、或 `~/.pi/agent/models.json` 的 `providers.kimi.apiKey` 读取）
 - 颜色随用量变化：≤70% 绿 / >70% 黄 / >90% 红；`↻` 后为重置倒计时
 - 纯 API key（按量付费）没有 5h/周配额概念，这两个元素会自动隐藏，仅显示 `rateLimit`
+
+## 账户余额（按量付费 API）
+
+使用按量付费 API（如 DeepSeek）时，HUD 每 5 分钟轮询余额接口并显示：
+
+```
+💰 ¥12.50
+```
+
+- **DeepSeek**：轮询 `api.deepseek.com/user/balance`（key 依次从 `DEEPSEEK_API_KEY`、`auth.json`、`models.json` 的 `providers.deepseek.apiKey` 读取）
+- 余额 ≤0 显示红色，<10 显示黄色，>10 绿色；超过 10 分钟未刷新变暗
+- 切换 provider 时自动清除旧余额数据
 
 不确定账号返回哪些头？开启 `"debugDumpHeaders": true`（或环境变量 `PI_HUD_DEBUG_HEADERS=1`），所有限额相关响应头会记录到 `~/.pi/agent/pi-agent-hud-headers.jsonl`。
 
