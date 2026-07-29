@@ -115,9 +115,9 @@ Press `Ctrl+H` to open a scrollable history overlay:
 
 For detailed documentation, see [docs/pi-agent-hud.md](docs/pi-agent-hud.md).
 
-### Ctrl+Alt+P — Execution Plan Overlay
+### Ctrl+Shift+J — Execution Plan Overlay
 
-Press `Ctrl+Alt+P` to view the agent's execution plan:
+Press `Ctrl+Shift+J` to view the agent's execution plan (or press `Tab` inside the `Ctrl+H` overlay to switch tabs):
 
 ```
 ┌ Agent Execution Plan ─────────────────────────────────┐
@@ -139,6 +139,17 @@ Press `Ctrl+Alt+P` to view the agent's execution plan:
 |-----|--------|
 | `Esc` / `Ctrl+C` | Close overlay |
 
+### Bubble Editor
+
+Set `"editor": "bubble"` to replace the default input box with a bordered bubble editor:
+
+- Top border left: model (provider color + icon) · thinking level · 5h/weekly quota · balance
+- Top border right: git branch · worktree marker · project path
+- Icon style: env `BUBBLE_ICON_MODE=nerdfont|unicode|emoji` (default `unicode`)
+- Runtime toggle: `/bubble` command on/off
+
+The bubble editor shares the same quota service with the status bar — no duplicated quota API requests.
+
 ## Configuration
 
 Configure via `.pi/pi-agent-hud.json` (project) or `~/.pi/agent/pi-agent-hud.json` (global):
@@ -155,6 +166,9 @@ Configure via `.pi/pi-agent-hud.json` (project) or `~/.pi/agent/pi-agent-hud.jso
   // Debug: dump rate-limit related response headers to
   // ~/.pi/agent/pi-agent-hud-headers.jsonl (or set env PI_HUD_DEBUG_HEADERS=1)
   "debugDumpHeaders": false,
+
+  // Editor component: "default" | "bubble" (bubble editor; toggle at runtime with /bubble)
+  "editor": "default",
 
   // Or only show specified elements (mutually exclusive with disabled)
   // "enabled": ["model", "project", "git", "contextBar", "elapsed", "tokens"]
@@ -309,9 +323,17 @@ module.exports = {
 ```
 pi-agent-hud/
 ├── extensions/
-│   └── pi-agent-hud.ts            # Extension source code
+│   └── agent-hud/                  # Extension source (multi-file directory extension)
+│       ├── index.ts                # Entry: events / shortcuts / commands wiring
+│       ├── quota.ts                # LLM quota/balance shared service
+│       ├── state.ts                # Session state + event trackers
+│       ├── hud-footer.ts           # Status bar + plugin system
+│       ├── bubble-editor.ts        # Bubble editor
+│       ├── overlay.ts              # History / plan overlay
+│       ├── layout.ts               # Render helpers + grid layout
+│       └── config.ts               # Config loading + element toggles
 ├── scripts/
-│   └── install.js                 # Installation script
+│   └── install.js                 # Installation script (copies dir to .pi/extensions/)
 ├── examples/
 │   ├── pi-agent-hud.json           # Config example (all fields)
 │   ├── layout-2col-demo.json       # Layout Demo: 2-column

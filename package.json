@@ -16,10 +16,10 @@
     "@mariozechner/pi-tui": "*"
   },
   "pi": {
-    "extensions": ["./extensions"]
+    "extensions": ["./extensions/agent-hud/index.ts"]
   },
   "scripts": {
-    "check": "tsc --noEmit --skipLibCheck extensions/pi-agent-hud.ts"
+    "check": "tsc --noEmit"
   },
   "devDependencies": {
     "typescript": "^5.0.0"

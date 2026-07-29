@@ -15,6 +15,11 @@
   "// Dump rate-limit related response headers to ~/.pi/agent/pi-agent-hud-headers.jsonl": "",
   "// debugDumpHeaders": true,
 
+  "// === Editor ===": "",
+  "// editor options": ["default", "bubble"],
+  "// bubble = 气泡编辑器（边框/图标/工程信息），运行时可用 /bubble 命令切换": "",
+  "// editor": "default",
+
   "// === Layout (grid mode) ===": "",
   "// Array of column counts per line. Max 5 lines, each 1/2/4 columns.",
   "// Omit this field entirely to use classic single-column mode.",

@@ -87,7 +87,7 @@ AGENTS.md · skills x5 · ext.tools x2 · 📋 3/5 · 2t · ✓ Grep ×10 · ✓
 
 ### Ctrl+H — 历史记录 + 执行计划浮层
 
-按 `Ctrl+H` 弹出统一浮层，按 `Tab` 键在**历史记录**和**执行计划**之间切换：
+按 `Ctrl+H` 弹出统一浮层，按 `Tab` 键在**历史记录**和**执行计划**之间切换；按 `Ctrl+Shift+J` 直接打开执行计划页：
 
 **历史记录页（默认）：**
 
@@ -124,7 +124,7 @@ AGENTS.md · skills x5 · ext.tools x2 · 📋 3/5 · 2t · ✓ Grep ×10 · ✓
 ├─────────────────────────────────────────────────────────┤
 │ 🕐 Tool call timeline                                   │
 │   ✓ 🔍 grep · extension                                 │
-│   ✓ ✎ edit · extensions/pi-agent-hud.ts                │
+│   ✓ ✎ edit · extensions/agent-hud/index.ts             │
 │   ◐ ⚙ bash · npm build (12s)                           │
 ├─────────────────────────────────────────────────────────┤
 │ 💬 Turn log                                             │
@@ -234,6 +234,7 @@ Pi HUD 通过 pi-coding-agent 的 Extension API 获取所有数据，无需外�
 | `disabled` | `string[]` | `[]` | 隐藏指定的元素（优先级高于 enabled） |
 | `layout` | `number[]` | 无（经典模式） | 每行列数数组，最多 5 行，每行 1/2/4 列 |
 | `placement` | `Record<string, {line, col}>` | 无 | 把元素钉到指定格子，仅网格模式生效 |
+| `editor` | `"default"` \| `"bubble"` | `"default"` | 输入框组件：默认 / 气泡编辑器（运行时可用 `/bubble` 命令切换） |
 
 ### 可配置元素列表
 
@@ -283,6 +284,23 @@ Pi HUD 通过 pi-coding-agent 的 Extension API 获取所有数据，无需外�
   "tokenThreshold": 90
 }
 ```
+
+---
+
+## 气泡编辑器（Bubble Editor）
+
+默认输入框可替换为带边框的气泡编辑器：
+
+```jsonc
+{ "editor": "bubble" }
+```
+
+- **顶栏左侧**：模型（provider 配色 + 图标）· thinking 档位 · 5h/每周额度 · 账户余额
+- **顶栏右侧**：git 分支 · worktree 标记 · 项目路径
+- **图标风格**：环境变量 `BUBBLE_ICON_MODE=nerdfont|unicode|emoji`（默认 `unicode`）
+- **运行时切换**：`/bubble` 命令开/关，无需重启或改配置
+
+气泡编辑器与 HUD 状态栏共享同一个 `QuotaService`（额度/余额数据源），不会重复请求配额接口。顶栏已展示的信息（模型、额度、余额等）可在 `disabled` 里关掉，避免与状态栏重复显示。
 
 ---
 
@@ -451,9 +469,9 @@ module.exports = {
 
 ## 扩展路径
 
-扩展文件位置：
+扩展为目录型多文件扩展（入口 `index.ts`）：
 
 ```
-.pi/extensions/pi-agent-hud.ts          # 项目级（自动加载）
-~/.pi/agent/extensions/pi-agent-hud.ts  # 全局（自动加载）
+.pi/extensions/agent-hud/          # 项目级（自动加载）
+~/.pi/agent/extensions/agent-hud/  # 全局（自动加载）
 ```

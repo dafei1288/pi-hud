@@ -8,6 +8,7 @@
     "noEmit": true,
     "esModuleInterop": true,
     "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
     "paths": {
       "@mariozechner/pi-ai": ["../pi-mono/packages/ai/src"],
       "@mariozechner/pi-coding-agent": ["../pi-mono/packages/coding-agent/src"],

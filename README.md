@@ -96,7 +96,7 @@ AGENTS.md · skills x5 · ext.tools x2 · ✓ Grep ×10 · ◐ Edit (12s) · ◐
 
 ### Ctrl+H — 历史记录 + 执行计划浮层
 
-按 `Ctrl+H` 弹出统一浮层，`Tab` 键在**历史记录**和**执行计划**之间切换：
+按 `Ctrl+H` 弹出统一浮层，`Tab` 键在**历史记录**和**执行计划**之间切换；`Ctrl+Shift+J` 直接打开执行计划页：
 
 **历史记录页（默认）：**
 
@@ -128,7 +128,7 @@ AGENTS.md · skills x5 · ext.tools x2 · ✓ Grep ×10 · ◐ Edit (12s) · ◐
 ├─────────────────────────────────────────────────────────┤
 │ 🕐 Tool call timeline                                   │
 │   ✓ 🔍 grep · extension                                 │
-│   ✓ ✎ edit · extensions/pi-agent-hud.ts                │
+│   ✓ ✎ edit · extensions/agent-hud/index.ts             │
 │   ◐ ⚙ bash · npm build (12s)                           │
 ├─────────────────────────────────────────────────────────┤
 │ 💬 Turn log                                             │
@@ -152,6 +152,17 @@ AGENTS.md · skills x5 · ext.tools x2 · ✓ Grep ×10 · ◐ Edit (12s) · ◐
 
 详细文档见 [docs/pi-agent-hud.md](docs/pi-agent-hud.md)。
 
+### 气泡编辑器（Bubble Editor）
+
+配置 `"editor": "bubble"` 后，默认输入框替换为带边框的气泡编辑器：
+
+- 顶栏左侧：模型（provider 配色 + 图标）· thinking 档位 · 5h/每周额度 · 余额
+- 顶栏右侧：git 分支 · worktree 标记 · 项目路径
+- 图标风格：环境变量 `BUBBLE_ICON_MODE=nerdfont|unicode|emoji`（默认 unicode）
+- 运行时切换：`/bubble` 命令开/关
+
+气泡编辑器与状态栏共享同一份额度数据，不会重复请求配额接口。
+
 ## 配置
 
 在 `.pi/pi-agent-hud.json`（项目级）或 `~/.pi/agent/pi-agent-hud.json`（全局）中配置：
@@ -168,6 +179,9 @@ AGENTS.md · skills x5 · ext.tools x2 · ✓ Grep ×10 · ◐ Edit (12s) · ◐
   // 调试：把响应中的限额相关 header 落盘到 ~/.pi/agent/pi-agent-hud-headers.jsonl
   // （也可用环境变量 PI_HUD_DEBUG_HEADERS=1 开启）
   "debugDumpHeaders": false,
+
+  // 输入框组件："default" 默认 | "bubble" 气泡编辑器（也可用 /bubble 命令切换）
+  "editor": "default",
 
   // 或只显示指定元素（二选一）
   // "enabled": ["model", "project", "git", "contextBar", "elapsed", "tokens"]
@@ -322,9 +336,17 @@ module.exports = {
 ```
 pi-agent-hud/
 ├── extensions/
-│   └── pi-agent-hud.ts            # 扩展源码
+│   └── agent-hud/                  # 扩展源码（多文件目录扩展）
+│       ├── index.ts                # 入口：事件/快捷键/命令装配
+│       ├── quota.ts                # LLM 计费/额度共享服务
+│       ├── state.ts                # 会话状态 + 事件追踪
+│       ├── hud-footer.ts           # 状态栏 + 插件系统
+│       ├── bubble-editor.ts        # 气泡编辑器
+│       ├── overlay.ts              # 历史/计划 overlay
+│       ├── layout.ts               # 渲染辅助 + 网格布局
+│       └── config.ts               # 配置加载 + 元素开关
 ├── scripts/
-│   └── install.js                 # 安装脚本
+│   └── install.js                 # 安装脚本（拷贝目录到 .pi/extensions/）
 ├── examples/
 │   ├── pi-agent-hud.json           # 配置示例（全字段）
 │   ├── layout-2col-demo.json       # 布局 Demo：2 列分栏
