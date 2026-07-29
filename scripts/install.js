@@ -57,4 +57,17 @@ for (const legacy of ["pi-agent-hud.ts", "bubble-test.ts"]) {
 
 const n = copyDir(srcDir, targetDir);
 console.log(`Installed ${n} files: ${targetDir}`);
+
+// Install default config if none exists (never overwrite user config)
+const configTarget = isGlobal
+  ? path.join(os.homedir(), ".pi", "agent", "pi-agent-hud.json")
+  : path.join(process.cwd(), ".pi", "pi-agent-hud.json");
+const configSource = path.resolve(__dirname, "..", "examples", "pi-agent-hud.json");
+if (fs.existsSync(configTarget)) {
+  console.log(`Config exists, kept: ${configTarget}`);
+} else if (fs.existsSync(configSource)) {
+  fs.copyFileSync(configSource, configTarget);
+  console.log(`Installed default config: ${configTarget}`);
+}
+
 console.log("Restart pi or run /reload to activate.");
