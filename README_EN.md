@@ -4,7 +4,7 @@ pi-agent-hud is a status bar extension for [pi-coding-agent](https://github.com/
 
 Inspired by [claude-hud](https://github.com/jarrodwatts/claude-hud).
 
-![](docs/intro.png)
+![demo](docs/demo.png)
 
 ## Preview
 

@@ -4,7 +4,7 @@ pi-agent-hud 是一个 [pi-coding-agent](https://github.com/nicholasgasior/pi) �
 
 灵感来自 [claude-hud](https://github.com/jarrodwatts/claude-hud)。
 
-![](docs/intro.png)
+![demo](docs/demo.png)
 
 ## 预览
 
