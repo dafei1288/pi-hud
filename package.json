@@ -1,13 +1,13 @@
 {
   "name": "pi-agent-hud",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pi HUD — real-time status bar extension for pi-coding-agent, inspired by claude-hud",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "hud", "statusbar", "extension"],
   "license": "MIT",
   "author": "dafei1288",
   "repository": {
     "type": "git",
-    "url": "https://github.com/dafei1288/pi-agent-hud.git"
+    "url": "git+https://github.com/dafei1288/pi-agent-hud.git"
   },
   "files": ["extensions/", "examples/", "scripts/", "docs/", "README.md", "README_EN.md"],
   "peerDependencies": {
