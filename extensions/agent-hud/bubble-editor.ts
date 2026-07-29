@@ -159,7 +159,7 @@ export function installBubbleEditor(
 		render(width: number): string[] {
 			const innerW = width - 2;
 			const pad = 2;
-			const editorW = innerW - pad * 2;
+			const editorW = Math.max(1, innerW - pad * 2);
 			const lines: string[] = [];
 
 			// 实时读取当前模型（/model 切换后下一帧即生效）
@@ -193,20 +193,24 @@ export function installBubbleEditor(
 			let rightText = rightParts.join(sep);
 
 			// 拼顶部线：空隙全部用 ─ 填满，左中右三段均分
-			const leftW = visibleWidth(leftText);
+			let leftW = visibleWidth(leftText);
 			let rightW = visibleWidth(rightText);
-			const maxRight = Math.max(10, innerW - leftW - 2 - 3);
+			// 右侧超宽先截断（至少给左侧留位）
+			const maxRight = Math.max(10, innerW - leftW - 5);
 			if (rightW > maxRight) {
 				rightText = truncateToWidth(rightText, maxRight, "…");
 				rightW = visibleWidth(rightText);
 			}
-			const gap = innerW - 2 - leftW - rightW; // 两个角各占 1，其余是空白区
-			const usable = gap - 4; // 扣除 4 个空格（左dash·左文·中dash·右文·右dash）
-			const leftD = Math.min(2, usable >= 3 ? Math.floor(usable / 3) : 0);
-			const rightD = Math.min(2, usable >= 3 ? Math.floor(usable / 3) : 0);
-			const midD = usable - leftD - rightD;
+			// 左侧同样要截断：模型+用量可能很长，窄终端下不截断会让中缝算出负数
+			const maxLeft = Math.max(8, innerW - rightW - 6);
+			const leftFinal = leftW > maxLeft ? truncateToWidth(leftText, maxLeft, "…") : leftText;
+			leftW = visibleWidth(leftFinal);
+			const usable = innerW - 2 - leftW - rightW - 4; // 两个角 + 4 个空格
+			const leftD = Math.min(2, Math.max(0, Math.floor(usable / 3)));
+			const rightD = Math.min(2, Math.max(0, Math.floor(usable / 3)));
+			const midD = Math.max(0, usable - leftD - rightD);
 			const topLine =
-				BLUE("╭" + "─".repeat(leftD) + " ") + color(leftText) +
+				BLUE("╭" + "─".repeat(leftD) + " ") + color(leftFinal) +
 				BLUE(" " + "─".repeat(midD) + " " + rightText + " " + "─".repeat(rightD) + "╮");
 			lines.push(truncateToWidth(topLine, width));
 
@@ -229,7 +233,7 @@ export function installBubbleEditor(
 				const l = Math.floor(bPad / 2), r = bPad - l;
 				lines.push(truncateToWidth(BLUE("╰─" + "─".repeat(l) + hint + "─".repeat(r) + "╯"), width));
 			} else {
-				lines.push(truncateToWidth(BLUE("╰" + "─".repeat(innerW - 2) + "╯"), width));
+				lines.push(truncateToWidth(BLUE("╰" + "─".repeat(Math.max(0, innerW - 2)) + "╯"), width));
 			}
 
 			return lines;
