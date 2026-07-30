@@ -12,6 +12,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type TUI } from "@mariozechner/pi-tui";
+import { formatResetCountdown } from "./layout.ts";
 import type { QuotaService } from "./quota.ts";
 
 // ============================================================================
@@ -154,6 +155,8 @@ export function installBubbleEditor(
 	const git = readGitInfo(ctx.cwd);
 	let tuiRef: TUI | undefined;
 	const unsubQuota = quota.onChange(() => tuiRef?.requestRender());
+	// 每秒滚动 reset 倒计时显示（planUsage 字段不变，但重置时间是动态的）
+	const resetTimer = setInterval(() => tuiRef?.requestRender(), 1_000);
 
 	class BubbleEditor extends CustomEditor {
 		render(width: number): string[] {
@@ -180,8 +183,16 @@ export function installBubbleEditor(
 			// thinking 档位：仅推理模型且非 off 时显示（与 HUD 逻辑一致）
 			const thinking = pi.getThinkingLevel?.() ?? "";
 			if (modelReasoning && thinking && thinking !== "off") leftParts.push(thinking);
-			if (planUsage?.fiveHour) leftParts.push(`5h:${Math.round(planUsage.fiveHour.usedPercent)}%`);
-			if (planUsage?.weekly) leftParts.push(`7d:${Math.round(planUsage.weekly.usedPercent)}%`);
+			if (planUsage?.fiveHour) {
+				const w5 = planUsage.fiveHour;
+				const r5 = w5.resetAt ? formatResetCountdown(w5.resetAt) : "";
+				leftParts.push(`5h:${Math.round(w5.usedPercent)}%${r5 ? ` ↻${r5}` : ""}`);
+			}
+			if (planUsage?.weekly) {
+				const w7 = planUsage.weekly;
+				const r7 = w7.resetAt ? formatResetCountdown(w7.resetAt) : "";
+				leftParts.push(`7d:${Math.round(w7.usedPercent)}%${r7 ? ` ↻${r7}` : ""}`);
+			}
 			if (balanceInfo) leftParts.push(iconText(ICONS.money, balanceInfo.label));
 			const leftText = leftParts.join(sep);
 
@@ -245,5 +256,8 @@ export function installBubbleEditor(
 		return new BubbleEditor(tui, theme, kb);
 	});
 
-	return () => { unsubQuota(); };
+	return () => {
+		clearInterval(resetTimer);
+		unsubQuota();
+	};
 }
