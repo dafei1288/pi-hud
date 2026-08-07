@@ -212,9 +212,9 @@ export const PLAN_PROVIDERS: PlanProviderSpec[] = [
 		// 顶层 `usage` = 每周汇总；limits[] 携带各窗口明细，
 		// window.duration+timeUnit 标识窗口（300 MINUTES = 5h）。
 		// 数值字段可能是字符串；resetTime 是 ISO8601。
-		providers: ["kimi"],
+		providers: ["kimi", "kimi-coding"],
 		envKeys: ["KIMI_CODE_API_KEY", "KIMI_API_KEY"],
-		authNames: ["kimi"],
+		authNames: ["kimi", "kimi-coding"],
 		modelsJsonProvider: "kimi",
 		url: "https://api.kimi.com/coding/v1/usages",
 		headers: (key) => ({ Authorization: `Bearer ${key}` }),
