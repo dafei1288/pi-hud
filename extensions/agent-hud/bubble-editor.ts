@@ -8,10 +8,9 @@
  * 图标风格：环境变量 BUBBLE_ICON_MODE = nerdfont | unicode | emoji（默认 unicode）
  */
 
-import * as fs from "node:fs";
-import * as path from "node:path";
 import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type TUI } from "@mariozechner/pi-tui";
+import { readGitInfo } from "./git-info.ts";
 import { formatResetCountdown } from "./layout.ts";
 import type { QuotaService } from "./quota.ts";
 
@@ -107,37 +106,8 @@ const PROVIDER_COLOR: Record<string, (s: string) => string> = {
 
 
 // ============================================================================
-// Git 信息
+// Git 信息（共享实现见 git-info.ts）
 // ============================================================================
-
-interface GitInfo {
-	/** 完整项目路径 */
-	project: string;
-	branch: string;
-	isWorktree: boolean;
-}
-
-function readGitInfo(cwd: string): GitInfo {
-	const info: GitInfo = { project: cwd, branch: "", isWorktree: false };
-	let cur = cwd;
-	for (let i = 0; i < 20; i++) {
-		const gp = path.join(cur, ".git");
-		try {
-			const stat = fs.statSync(gp);
-			info.isWorktree = stat.isFile();
-			const headPath = info.isWorktree
-				? path.join(fs.readFileSync(gp, "utf8").trim().replace("gitdir: ", ""), "HEAD")
-				: path.join(gp, "HEAD");
-			const head = fs.readFileSync(headPath, "utf8").trim();
-			info.branch = head.startsWith("ref: refs/heads/") ? head.slice(16) : `[${head.slice(0, 8)}]`;
-			return info;
-		} catch { /* 不是 git 仓库 */ }
-		const parent = path.dirname(cur);
-		if (parent === cur) break;
-		cur = parent;
-	}
-	return info;
-}
 
 // ============================================================================
 // 安装
@@ -196,10 +166,10 @@ export function installBubbleEditor(
 			if (balanceInfo) leftParts.push(iconText(ICONS.money, balanceInfo.label));
 			const leftText = leftParts.join(sep);
 
-			// 右边：工程信息
+			// 右边：工程信息（worktree：主工作区显示 main，linked 显示其名称）
 			const rightParts: string[] = [];
 			if (git.branch) rightParts.push(iconText(ICONS.branch, git.branch));
-			if (git.isWorktree) rightParts.push(iconText(ICONS.worktree, "wt"));
+			if (git.worktree) rightParts.push(iconText(ICONS.worktree, git.worktree));
 			if (git.project) rightParts.push(iconText(osIcon(), git.project));
 			let rightText = rightParts.join(sep);
 

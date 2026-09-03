@@ -19,7 +19,8 @@
     "extensions": ["./extensions/agent-hud/index.ts"]
   },
   "scripts": {
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test": "bun --preload ./test/preload-hud-stubs.ts test/simulate-hud.ts"
   },
   "devDependencies": {
     "typescript": "^5.0.0"

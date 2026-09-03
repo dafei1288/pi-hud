@@ -45,6 +45,43 @@ pi list
 
 安装后重启 pi 或在会话中输入 `/reload` 即可激活。
 
+## 双端支持：pi 与 omp (@oh-my-pi v18)
+
+同一份 `extensions/agent-hud/` 同时兼容 pi（@earendil-works/pi-coding-agent 0.84）与
+omp（@oh-my-pi/pi-coding-agent 18.x）。两份都装即可：
+
+```bash
+# pi
+cp -r extensions/agent-hud ~/.pi/agent/extensions/
+# omp
+cp -r extensions/agent-hud ~/.omp/agent/extensions/
+```
+
+两端差异与取舍（已内置处理）：
+
+- **状态栏渲染**：pi 的 `ctx.ui.setFooter()` 是真实现；omp v18 把它做成了 noop。
+  本扩展在 omp 下自动改走 `ctx.ui.setStatus(key, text)`：渲染组件产出的每一行
+  作为一条状态行追加到 omp 内建底部状态栏（key `hud-row-0..4`，会话结束时清空）。
+  注意：omp 内建栏自身已显示 model/git 分支/上下文/费用，HUD 行会追加在其下方，
+  重复元素可用配置 `disabled` 关掉；且 omp 状态行经 `sanitizeStatusText` 过滤，
+  **不保留颜色**（pi 端保持原样彩色）。
+- **git 分支**：pi 用 `footerData.getGitBranch()`；omp 没有该数据源，改用纯 fs 探测
+  （`git-info.ts`，bubble 编辑器同款 worktree 感知逻辑，10s 缓存）。
+- **配置/凭证/插件目录**：`.pi`/`~/.pi/agent` 与 `.omp`/`~/.omp/agent` 都会读取
+  （本运行时目录优先，旧 pi 配置无缝生效）；auth.json/models.json 同理。
+- **覆盖运行时探测**：默认按进程名判断；需要强制时设 `PI_HUD_RUNTIME=pi|omp`
+  （测试亦用此开关）。
+
+已知边界：omp 端底部状态栏替换/网格布局的多栏排版无法 1:1 复刻（内建栏不可移除），
+因此 omp 下 `layout` 网格把每行压成一条状态行；bubble 编辑器、Ctrl+H/Ctrl+Shift+J
+浮层、配额/余额轮询、插件系统在两端行为一致。
+
+自检（不依赖真实会话，bun 需要 ≥1.3）：
+
+```bash
+npm test
+```
+
 ## 显示内容
 
 ### Line 1 — 会话概览

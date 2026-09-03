@@ -12,8 +12,8 @@
  */
 
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { agentConfigRoot, agentConfigRoots } from "./runtime.ts";
 
 // ============================================================================
 // 类型
@@ -132,19 +132,24 @@ function resolveKey(spec: { envKeys: string[]; authNames: string[]; modelsJsonPr
 	for (const env of spec.envKeys) {
 		if (process.env[env]) return process.env[env];
 	}
-	try {
-		const auth = JSON.parse(readFileSync(join(homedir(), ".pi", "agent", "auth.json"), "utf8"));
-		for (const name of spec.authNames) {
-			const entry = auth[name];
-			if (entry?.type === "api_key" && entry.key) return entry.key;
-		}
-	} catch { /* ignore */ }
-	if (spec.modelsJsonProvider) {
+	// ~/.omp/agent 与 ~/.pi/agent 都试（本运行时目录靠前）；任一目录命中即返回。
+	for (const root of agentConfigRoots()) {
 		try {
-			const models = JSON.parse(readFileSync(join(homedir(), ".pi", "agent", "models.json"), "utf8"));
-			const key = models?.providers?.[spec.modelsJsonProvider]?.apiKey;
-			if (typeof key === "string" && key) return key;
+			const auth = JSON.parse(readFileSync(join(root, "auth.json"), "utf8"));
+			for (const name of spec.authNames) {
+				const entry = auth[name];
+				if (entry?.type === "api_key" && entry.key) return entry.key;
+			}
 		} catch { /* ignore */ }
+	}
+	if (spec.modelsJsonProvider) {
+		for (const root of agentConfigRoots()) {
+			try {
+				const models = JSON.parse(readFileSync(join(root, "models.json"), "utf8"));
+				const key = models?.providers?.[spec.modelsJsonProvider]?.apiKey;
+				if (typeof key === "string" && key) return key;
+			} catch { /* ignore */ }
+		}
 	}
 	return undefined;
 }
@@ -439,10 +444,10 @@ export class QuotaService {
 	 * rate limit（Anthropic/OpenAI）+ 订阅配额窗口（Codex/Claude OAuth）。
 	 */
 	handleProviderHeaders(headers: Record<string, string> | undefined, status: number): void {
-		// Debug: dump rate-limit 相关头用于发现新字段
+		// Debug: dump rate-limit 相关头用于发现新字段（写到本运行时的 agent 目录）
 		if (headers && (this.debugDumpHeaders || process.env.PI_HUD_DEBUG_HEADERS)) {
 			try {
-				const dir = join(homedir(), ".pi", "agent");
+				const dir = agentConfigRoot();
 				mkdirSync(dir, { recursive: true });
 				appendFileSync(
 					join(dir, "pi-agent-hud-headers.jsonl"),

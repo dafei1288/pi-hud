@@ -6,6 +6,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { agentConfigRoots, detectRuntime, projectConfigRoots } from "./runtime.ts";
 
 // ============================================================================
 // 类型
@@ -85,16 +86,26 @@ export interface HudConfig {
 // 加载与查询
 // ============================================================================
 
-/** 加载并合并配置：~/.pi/agent/pi-agent-hud.json（全局）→ .pi/pi-agent-hud.json（项目） */
+/**
+ * 加载并合并配置。
+ * 全局：~/.pi/agent 与 ~/.omp/agent 都尝试（本运行时目录优先，后读覆盖先读）；
+ * 项目：.pi 与 .omp 都尝试（同样本运行时优先）。
+ */
 export function loadConfig(cwd: string): HudConfig {
 	const result: HudConfig = {
 		tokenMode: "always",
 		tokenThreshold: 85,
 	};
 
+	const runtime = detectRuntime();
+	const roots = agentConfigRoots();
+	const globalRoots = runtime === "omp" ? roots : [...roots].reverse();
+	const projRoots = projectConfigRoots(cwd);
+	const projectOrder = runtime === "omp" ? projRoots : [...projRoots].reverse();
+
 	const paths = [
-		join((process.env.HOME || process.env.USERPROFILE) || "", ".pi", "agent", "pi-agent-hud.json"),
-		join(cwd, ".pi", "pi-agent-hud.json"),
+		...globalRoots.map((root) => join(root, "pi-agent-hud.json")),
+		...projectOrder.map((root) => join(root, "pi-agent-hud.json")),
 	];
 
 	for (const p of paths) {
@@ -128,10 +139,15 @@ export function detectContextFiles(cwd: string): string[] {
 
 	const home = process.env.HOME || process.env.USERPROFILE;
 	if (home) {
-		for (const name of candidates) {
-			if (existsSync(join(home, ".pi", "agent", name))) {
-				found.push(`~/.pi/agent/${name}`);
-				seen.add(name);
+		for (const root of agentConfigRoots()) {
+			for (const name of candidates) {
+				if (seen.has(name)) continue;
+				if (existsSync(join(root, name))) {
+					const segments = root.replace(/[\\/]+$/, "").split(/[\\/]/);
+					const rel = segments.slice(-2).join("/");
+					found.push(`~/${rel}/${name}`);
+					seen.add(name);
+				}
 			}
 		}
 	}

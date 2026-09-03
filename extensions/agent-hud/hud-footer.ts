@@ -6,6 +6,14 @@
  * Line 3: ▸ last user input  Ctrl+H:5
  *
  * 插件：把 .js/.ts 文件放到 .pi/pi-agent-hud-plugins/ 或 ~/.pi/agent/pi-agent-hud-plugins/
+ *       （omp 下对应 .omp/pi-agent-hud-plugins/ 与 ~/.omp/agent/pi-agent-hud-plugins/）
+ *
+ * 双端渲染（pi vs omp）：
+ *   - pi: ctx.ui.setFooter() 是真实现，渲染彩色 footer 组件。
+ *   - omp (@oh-my-pi v18): ctx.ui.setFooter()/setHeader() 是 noop，但内建状态栏
+ *     支持 ctx.ui.setStatus(key, text) 追加行（每 key 一行）。这里用一个假 host
+ *     复用同一份渲染组件，把组件产出的行逐行灌进 setStatus；内建栏保留其自身的
+ *     model/git/context 段（omp 上没有“替换整条 footer”的概念）。
  */
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -13,6 +21,8 @@ import { join } from "node:path";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { readGitInfo } from "./git-info.ts";
+import { agentConfigRoots, detectRuntime, isOmpRuntime, projectConfigRoots } from "./runtime.ts";
 import {
 	detectContextFiles,
 	isEnabled,
@@ -93,12 +103,17 @@ export interface HudTheme {
 	fg(color: "text" | "dim" | "accent" | "success" | "warning" | "error", text: string): string;
 }
 
-/** 从 .pi/pi-agent-hud-plugins/ 和 ~/.pi/agent/pi-agent-hud-plugins/ 加载用户插件 */
+/** 从各运行时目录的 pi-agent-hud-plugins/ 加载用户插件（本运行时目录优先）。 */
 function loadPlugins(cwd: string): HudPlugin[] {
 	const plugins: HudPlugin[] = [];
+	const runtime = detectRuntime();
+	const homeDirs = agentConfigRoots();
+	const globalDirs = runtime === "omp" ? homeDirs : [...homeDirs].reverse();
+	const projRoots = projectConfigRoots(cwd);
+	const projectDirs = runtime === "omp" ? projRoots : [...projRoots].reverse();
 	const dirs = [
-		join((process.env.HOME || process.env.USERPROFILE) || "", ".pi", "agent", "pi-agent-hud-plugins"),
-		join(cwd, ".pi", "pi-agent-hud-plugins"),
+		...globalDirs.map((root) => join(root, "pi-agent-hud-plugins")),
+		...projectDirs.map((root) => join(root, "pi-agent-hud-plugins")),
 	];
 
 	for (const dir of dirs) {
@@ -142,12 +157,160 @@ function targetToLine(target: string | undefined): number {
 // Footer 创建
 // ============================================================================
 
+/** 状态栏行渲染用到的语义色（两端 theme.fg 都支持这组颜色名）。 */
+type HudColor = "text" | "dim" | "accent" | "success" | "warning" | "error";
+
+/** pi footer factory 三个入参的最小结构面。两端运行时同构： */
+interface HudTuiLike {
+	requestRender(): void;
+}
+interface HudThemeLike {
+	fg(color: HudColor, text: string): string;
+}
+interface HudFooterDataLike {
+	getGitBranch(): string | undefined;
+	onBranchChange(cb: () => void): () => void;
+}
+interface HudFooterComponentLike {
+	dispose(): void;
+	invalidate(): void;
+	render(width: number): string[];
+}
+type HudFooterFactory = (
+	tui: HudTuiLike,
+	theme: HudThemeLike,
+	footerData: HudFooterDataLike,
+) => HudFooterComponentLike;
+
+/**
+ * 入口：按运行时选择交付方式。
+ *  - pi: 真 setFooter，渲染彩色 footer 组件。
+ *  - omp (@oh-my-pi v18): setFooter 是 noop，复用同一渲染组件把行推到
+ *    内建状态栏的 setStatus(key, text)（每 key 一行）。
+ */
 export function createHudFooter(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	state: SessionState,
 	quota: QuotaService,
 ): void {
+	if (isOmpRuntime()) {
+		createOmpFooter(pi, ctx, state, quota);
+	} else {
+		installClassicFooter(pi, ctx, state, quota);
+	}
+}
+
+/** pi 交付：调用真实 ctx.ui.setFooter。 */
+function installClassicFooter(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	state: SessionState,
+	quota: QuotaService,
+): void {
+	const factory = buildHudFooterFactory(pi, ctx, state, quota);
+	// 跨版本类型面收敛：两端 ExtensionContext.ui.setFooter 签名同构，这里按本地最小面断言。
+	const ui = ctx.ui as unknown as { setFooter(factory: HudFooterFactory): void };
+	ui.setFooter(factory);
+}
+
+// omp 无 setFooter 真实现；setStatus 行由本函数管理。session_shutdown 处理器
+// 只在同一 ExtensionAPI 上注册一次，清理动作始终指向“最近一次”安装的组件。
+const ompCleanupRegistered = new WeakSet<object>();
+let activeOmpCleanup: (() => void) | undefined;
+
+/** omp 交付：无 setFooter 真实现（v18 是 noop），改走 setStatus 行。 */
+function createOmpFooter(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	state: SessionState,
+	quota: QuotaService,
+): void {
+	const ui = ctx.ui as unknown as {
+		setStatus?: (key: string, text: string | undefined) => void;
+		theme?: { fg(color: string, text: string): string };
+	};
+	if (typeof ui.setStatus !== "function") return; // 无状态栏环境（如 print/rpc）放弃
+
+	// omp Theme.fg 接受 ThemeColor（HudColor 是其子集），按本地面断言即可。
+	const ompTheme = ui.theme as HudThemeLike | undefined;
+	const theme: HudThemeLike = ompTheme ?? { fg: (_color: HudColor, text: string) => text };
+
+	// omp 没有 footerData.getGitBranch()；用 fs 探测 git（bubble 编辑器同款逻辑），
+	// 每 10s / cwd 变化后刷新。
+	let branchCache: { cwd: string; at: number; branch: string | undefined } = {
+		cwd: "",
+		at: 0,
+		branch: undefined,
+	};
+	const footerData: HudFooterDataLike = {
+		getGitBranch: () => {
+			const now = Date.now();
+			if (branchCache.cwd !== ctx.cwd || now - branchCache.at > 10_000) {
+				const info = readGitInfo(ctx.cwd);
+				branchCache = { cwd: ctx.cwd, at: now, branch: info.branch || undefined };
+			}
+			return branchCache.branch;
+		},
+		onBranchChange: () => () => {}, // 轮询（paint 周期）已覆盖分支切换
+	};
+
+	// 行数上限：经典 2-3 行 / 网格布局最多 5 行（layout 每行一组 → 每行一个 key）
+	const MAX_ROWS = 5;
+
+	let component: HudFooterComponentLike | undefined;
+	const terminalWidth = (): number => {
+		const stdout = process.stdout as { columns?: unknown };
+		return typeof stdout.columns === "number" && stdout.columns > 40 ? stdout.columns : 100;
+	};
+
+	function paint(): void {
+		if (!component || typeof ui.setStatus !== "function") return;
+		const lines = component.render(terminalWidth());
+		for (let i = 0; i < MAX_ROWS; i++) {
+			if (i < lines.length) {
+				ui.setStatus(`hud-row-${i}`, lines[i]);
+			} else {
+				ui.setStatus(`hud-row-${i}`, undefined); // 清掉上一帧的多余行
+			}
+		}
+	}
+
+	const factory = buildHudFooterFactory(pi, ctx, state, quota);
+	const fakeTui: HudTuiLike = { requestRender: () => paint() };
+	component = factory(fakeTui, theme, footerData);
+
+	// 组件已就位：立即推一帧，之后周期性刷新（运行中工具耗时/倒计时/elapsed）。
+	paint();
+	const timer = setInterval(paint, 3_000);
+
+	const shutdownCleanup = (): void => {
+		clearInterval(timer);
+		component?.dispose();
+		component = undefined;
+		if (typeof ui.setStatus === "function") {
+			for (let i = 0; i < MAX_ROWS; i++) ui.setStatus(`hud-row-${i}`, undefined);
+		}
+		activeOmpCleanup = undefined;
+	};
+	activeOmpCleanup = shutdownCleanup;
+	if (!ompCleanupRegistered.has(pi as unknown as object)) {
+		ompCleanupRegistered.add(pi as unknown as object);
+		pi.on("session_shutdown", () => activeOmpCleanup?.());
+	}
+}
+
+/**
+ * 两端的共享渲染体：返回 pi footer factory（(tui, theme, footerData) =>
+ * footer 组件）。pi 端交给 ctx.ui.setFooter；omp 端喂给假 (tui, theme, footerData)
+ * 后把组件产出的行推入 setStatus。
+ */
+function buildHudFooterFactory(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	state: SessionState,
+	quota: QuotaService,
+): HudFooterFactory {
 	let cachedCwd = "";
 	let cachedContextFiles: string[] = [];
 	let config: HudConfig = {};
@@ -164,7 +327,7 @@ export function createHudFooter(
 
 	refreshContextFiles(ctx.cwd);
 
-	ctx.ui.setFooter((tui, theme, footerData) => {
+	return (tui, theme, footerData) => {
 		const unsubBranch = footerData.onBranchChange(() => tui.requestRender());
 		const timer = setInterval(() => tui.requestRender(), 30_000);
 		const unsubQuota = quota.onChange(() => tui.requestRender());
@@ -552,5 +715,5 @@ export function createHudFooter(
 				return line3 ? [line1, line2, line3] : [line1, line2];
 			},
 		};
-	});
+	};
 }
