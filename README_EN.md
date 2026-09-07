@@ -195,6 +195,7 @@ Configure via `.pi/pi-agent-hud.json` (project) or `~/.pi/agent/pi-agent-hud.jso
 | `rateLimit` | ⚡ API rate limit remaining (Anthropic/OpenAI auto-detected) | ✅ |
 | `plan5h` | ⏳ Coding plan 5-hour window usage (Claude subscription / Codex OAuth) | ✅ |
 | `planWeek` | 📅 Coding plan weekly window usage (Claude subscription / Codex OAuth) | ✅ |
+| `planMonth` | 🗓mo Coding plan monthly window usage (GLM TIME_LIMIT) | ✅ |
 | `toolStats` | Completed tool stats | ✅ |
 | `runningTools` | Running tools | ✅ |
 | `runningAgents` | Running agents | ✅ |
@@ -203,21 +204,21 @@ Configure via `.pi/pi-agent-hud.json` (project) or `~/.pi/agent/pi-agent-hud.jso
 
 See [examples/pi-agent-hud.json](examples/pi-agent-hud.json) for a full configuration example.
 
-## Coding Plan Usage (5-hour / Weekly Limits)
+## Coding Plan Usage (5-hour / Weekly / Monthly Limits)
 
-When using subscription quotas (Claude Pro/Max, ChatGPT Codex OAuth), the HUD parses two quota windows from response headers and shows:
+When using subscription quotas (Claude Pro/Max, ChatGPT Codex OAuth), the HUD parses quota windows automatically and shows:
 
 ```
-⏳5h 42% ↻2h15m · 📅wk 18% ↻3d4h
+⏳5h 42% ↻2h15m · 📅wk 18% ↻3d4h · 🗓mo 12% ↻12d3h
 ```
 
 - **Claude subscription (OAuth)**: parses `anthropic-ratelimit-unified-5h-*` / `-7d-*` headers
 - **Codex (ChatGPT OAuth)**: parses `x-codex-primary-*` (primary window) / `x-codex-secondary-*` (weekly) headers; window lengths come from the server and adapt automatically
-- **GLM Coding Plan (zai-coding-cn)**: responses carry no quota headers, so the HUD polls `open.bigmodel.cn/api/monitor/usage/quota/limit` every 5 min (key from env `ZAI_CODING_CN_API_KEY` or `~/.pi/agent/auth.json`)
+- **GLM Coding Plan (provider id: `zai-coding-cn` on pi, `zhipu-coding-plan` on omp)**: responses carry no quota headers, so the HUD polls `open.bigmodel.cn/api/monitor/usage/quota/limit` every 5 min (key from env `ZAI_CODING_CN_API_KEY`/`ZHIPU_CODING_PLAN_API_KEY` or `~/.pi/agent/auth.json`). `TOKENS_LIMIT` entries map to the 5h/weekly windows; `TIME_LIMIT` is the monthly tool quota (search/zread requests per month)
 - **MiniMax Coding Plan (minimax / minimax-cn)**: same — polls `api.minimaxi.com/v1/api/openplatform/coding_plan/remains` every 5 min (key from env `MINIMAX_API_KEY` or `auth.json`)
 - **Kimi Coding Plan (kimi)**: same — polls `api.kimi.com/coding/v1/usages` every 5 min (key from env `KIMI_CODE_API_KEY`/`KIMI_API_KEY`, `auth.json`, or `~/.pi/agent/models.json` `providers.kimi.apiKey`)
 - Color scales with usage: ≤70% green / >70% yellow / >90% red; `↻` shows the reset countdown
-- Plain API keys (pay-as-you-go) have no 5h/weekly quotas — these elements stay hidden and only `rateLimit` is shown
+- Plain API keys (pay-as-you-go) have no 5h/weekly/monthly quotas — these elements stay hidden and only `rateLimit` is shown
 
 ## Account Balance (pay-per-use APIs)
 

@@ -429,6 +429,11 @@ function buildHudFooterFactory(
 				// ================================================================
 				const sep = theme.fg("dim", "│");
 
+				// omp 配额行：把 费用/余额/5h/周/月限 抽离原行单独成行（经典单列模式；
+				// layout 网格模式不走此分支，元素仍留在各自行/格子里）。
+				const quotaOwnRow = (config.quotaRow ?? isOmpRuntime()) && !(config.layout && config.layout.length > 0);
+				const quotaItems: CellItem[] = [];
+
 				// --- Line 1: 上下文 bar（最左）+ tokens/费用/rateLimit（中间）+ 耗时（最右） ---
 				const line1Parts: string[] = [];
 				if (isEnabled(config, "rateLimit") && rateLimitInfo) {
@@ -453,7 +458,14 @@ function buildHudFooterFactory(
 					if (showTokens) line1Parts.push(theme.fg("dim", `↑${formatTokens(totalInput)} ↓${formatTokens(totalOutput)}`));
 				}
 				if (isEnabled(config, "cost") && totalCost > 0) {
-					line1Parts.push(theme.fg("dim", `$${totalCost.toFixed(3)}`));
+					if (quotaOwnRow) {
+						quotaItems.push({
+							key: "cost", defaultLine: 1, order: 0, fixedCol: undefined,
+							render: () => theme.fg("dim", `$${totalCost.toFixed(3)}`),
+						});
+					} else {
+						line1Parts.push(theme.fg("dim", `$${totalCost.toFixed(3)}`));
+					}
 				}
 				if (isEnabled(config, "agentPlan") && turnCount > 0) {
 					line1Parts.push(theme.fg("dim", `${turnCount} turn`));
@@ -517,6 +529,10 @@ function buildHudFooterFactory(
 
 				// --- Line 2 元素 ---
 				const line2Items: CellItem[] = [];
+				// 配额类元素（余额/5h/周/月）在配额行模式下改入 quotaItems，否则留原行
+				const quotaLine2 = (item: CellItem): void => {
+					(quotaOwnRow ? quotaItems : line2Items).push(item);
+				};
 
 				if (isEnabled(config, "contextFiles")) {
 					for (const f of cachedContextFiles) {
@@ -556,7 +572,7 @@ function buildHudFooterFactory(
 						: balanceInfo.value <= 0 ? "warning"
 						: balanceInfo.value < 10 ? "warning"
 						: "success";
-					line2Items.push({
+					quotaLine2({
 						key: "balance", defaultLine: 1, order: 6,
 						fixedCol: config.placement?.balance?.col,
 						render: () => theme.fg(color, `💰 ${balanceInfo.label}`),
@@ -566,7 +582,7 @@ function buildHudFooterFactory(
 				if (isEnabled(config, "plan5h") && planUsage?.fiveHour) {
 					const w = planUsage.fiveHour;
 					const label = w.windowMinutes ? formatWindowLabel(w.windowMinutes) : "5h";
-					line2Items.push({
+					quotaLine2({
 						key: "plan5h", defaultLine: 1, order: 7,
 						fixedCol: config.placement?.plan5h?.col,
 						render: () => {
@@ -578,12 +594,25 @@ function buildHudFooterFactory(
 				if (isEnabled(config, "planWeek") && planUsage?.weekly) {
 					const w = planUsage.weekly;
 					const label = w.windowMinutes ? formatWindowLabel(w.windowMinutes) : "wk";
-					line2Items.push({
+					quotaLine2({
 						key: "planWeek", defaultLine: 1, order: 8,
 						fixedCol: config.placement?.planWeek?.col,
 						render: () => {
 							const reset = w.resetAt ? formatResetCountdown(w.resetAt) : "";
 							return `${ctxColor(theme, w.usedPercent, `📅${label} ${Math.round(w.usedPercent)}%`)}${reset ? theme.fg("dim", ` ↻${reset}`) : ""}`;
+						},
+					});
+				}
+
+				if (isEnabled(config, "planMonth") && planUsage?.monthly) {
+					const w = planUsage.monthly;
+					const label = w.windowMinutes ? formatWindowLabel(w.windowMinutes) : "mo";
+					quotaLine2({
+						key: "planMonth", defaultLine: 1, order: 9,
+						fixedCol: config.placement?.planMonth?.col,
+						render: () => {
+							const reset = w.resetAt ? formatResetCountdown(w.resetAt) : "";
+							return `${ctxColor(theme, w.usedPercent, `🗓${label} ${Math.round(w.usedPercent)}%`)}${reset ? theme.fg("dim", ` ↻${reset}`) : ""}`;
 						},
 					});
 				}
@@ -712,7 +741,20 @@ function buildHudFooterFactory(
 					line3 = truncateToWidth(line3, width, theme.fg("dim", "…"));
 				}
 
-				return line3 ? [line1, line2, line3] : [line1, line2];
+				// 行序：Line1（上下文/信息） → 配额行（费用/余额/5h/周/月，omp） → Line2 → Line3
+				const rows: string[] = [line1];
+				if (quotaOwnRow && quotaItems.length > 0) {
+					const quotaParts = quotaItems
+						.sort((a, b) => a.order - b.order)
+						.map((item) => item.render())
+						.filter((s): s is string => s != null);
+					if (quotaParts.length > 0) {
+						rows.push(truncateToWidth(quotaParts.join(theme.fg("dim", " · ")), width, theme.fg("dim", "...")));
+					}
+				}
+				rows.push(line2);
+				if (line3) rows.push(line3);
+				return rows;
 			},
 		};
 	};

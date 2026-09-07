@@ -65,6 +65,10 @@ cp -r extensions/agent-hud ~/.omp/agent/extensions/
   注意：omp 内建栏自身已显示 model/git 分支/上下文/费用，HUD 行会追加在其下方，
   重复元素可用配置 `disabled` 关掉；且 omp 状态行经 `sanitizeStatusText` 过滤，
   **不保留颜色**（pi 端保持原样彩色）。
+- **配额行**：omp 下 费用/余额/5h/周/月限 默认抽离为单独一行（HUD 第 2 行，位于
+  上下文/信息行之下），不再与统计行/输入行混排；设 `quotaRow: false` 可关闭。
+  pi 默认不启用（历史布局不变），需要时设 `quotaRow: true`。layout 网格模式不受
+  影响，仍用 `placement` 自行摆放。
 - **git 分支**：pi 用 `footerData.getGitBranch()`；omp 没有该数据源，改用纯 fs 探测
   （`git-info.ts`，bubble 编辑器同款 worktree 感知逻辑，10s 缓存）。
 - **配置/凭证/插件目录**：`.pi`/`~/.pi/agent` 与 `.omp`/`~/.omp/agent` 都会读取
@@ -245,6 +249,7 @@ AGENTS.md · skills x5 · ext.tools x2 · ✓ Grep ×10 · ◐ Edit (12s) · ◐
 | `rateLimit` | ⚡ API 额度剩余（Anthropic/OpenAI 自动检测） | ✅ |
 | `plan5h` | ⏳ Coding Plan 5小时窗口用量（Claude 订阅 / Codex OAuth） | ✅ |
 | `planWeek` | 📅 Coding Plan 周窗口用量（Claude 订阅 / Codex OAuth） | ✅ |
+| `planMonth` | 🗓mo Coding Plan 月度窗口用量（GLM TIME_LIMIT） | ✅ |
 | `toolStats` | 工具调用统计 | ✅ |
 | `runningTools` | 正在执行的工具 | ✅ |
 | `runningAgents` | 正在运行的 Agent | ✅ |
@@ -253,21 +258,21 @@ AGENTS.md · skills x5 · ext.tools x2 · ✓ Grep ×10 · ◐ Edit (12s) · ◐
 
 完整配置示例见 [examples/pi-agent-hud.json](examples/pi-agent-hud.json)。
 
-## Coding Plan 用量（5小时 / 周限额）
+## Coding Plan 用量（5小时 / 周 / 月限额）
 
-使用订阅配额（Claude Pro/Max 订阅、ChatGPT Codex OAuth）时，HUD 会从响应头自动解析两个配额窗口并显示：
+使用订阅配额（Claude Pro/Max 订阅、ChatGPT Codex OAuth）时，HUD 会自动解析配额窗口并显示：
 
 ```
-⏳5h 42% ↻2h15m · 📅wk 18% ↻3d4h
+⏳5h 42% ↻2h15m · 📅wk 18% ↻3d4h · 🗓mo 12% ↻12d3h
 ```
 
 - **Claude 订阅（OAuth）**：解析 `anthropic-ratelimit-unified-5h-*` / `-7d-*` 响应头
 - **Codex（ChatGPT OAuth）**：解析 `x-codex-primary-*`（主窗口）/ `x-codex-secondary-*`（周窗口）响应头，窗口时长由服务端返回，自动适配
-- **GLM Coding Plan（智谱，zai-coding-cn）**：响应头不含配额，HUD 每 5 分钟轮询 `open.bigmodel.cn/api/monitor/usage/quota/limit`（从环境变量 `ZAI_CODING_CN_API_KEY` 或 `~/.pi/agent/auth.json` 读取 key）
+- **GLM Coding Plan（智谱，provider id：pi 为 `zai-coding-cn`，omp 为 `zhipu-coding-plan`）**：响应头不含配额，HUD 每 5 分钟轮询 `open.bigmodel.cn/api/monitor/usage/quota/limit`（key 从环境变量 `ZAI_CODING_CN_API_KEY`/`ZHIPU_CODING_PLAN_API_KEY` 或 `~/.pi/agent/auth.json` 读取）。`TOKENS_LIMIT` 条目为 5h/周窗口，`TIME_LIMIT` 条目为月度工具配额（search/zread 等按月次数）
 - **MiniMax Coding Plan（minimax / minimax-cn）**：同样无响应头配额，HUD 每 5 分钟轮询 `api.minimaxi.com/v1/api/openplatform/coding_plan/remains`（key 来自 `MINIMAX_API_KEY` 或 `auth.json`）
 - **Kimi Coding Plan（kimi）**：同样无响应头配额，HUD 每 5 分钟轮询 `api.kimi.com/coding/v1/usages`（key 依次从 `KIMI_CODE_API_KEY`/`KIMI_API_KEY`、`auth.json`、或 `~/.pi/agent/models.json` 的 `providers.kimi.apiKey` 读取）
 - 颜色随用量变化：≤70% 绿 / >70% 黄 / >90% 红；`↻` 后为重置倒计时
-- 纯 API key（按量付费）没有 5h/周配额概念，这两个元素会自动隐藏，仅显示 `rateLimit`
+- 纯 API key（按量付费）没有 5h/周/月配额概念，这些元素会自动隐藏，仅显示 `rateLimit`
 
 ## 账户余额（按量付费 API）
 

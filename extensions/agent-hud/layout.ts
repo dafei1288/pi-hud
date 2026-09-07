@@ -32,8 +32,9 @@ export function formatTokens(n: number): string {
 	return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
-/** 窗口长度（分钟）→ 人类标签: 300 → "5h", 10080 → "wk" */
+/** 窗口长度（分钟）→ 人类标签: 300 → "5h", 10080 → "wk", 43200 → "mo" */
 export function formatWindowLabel(minutes: number): string {
+	if (minutes % (30 * 24 * 60) === 0) return minutes === 30 * 24 * 60 ? "mo" : `${minutes / (30 * 24 * 60)}mo`;
 	if (minutes % (7 * 24 * 60) === 0) return "wk";
 	if (minutes % (24 * 60) === 0) return `${minutes / (24 * 60)}d`;
 	if (minutes % 60 === 0) return `${minutes / 60}h`;

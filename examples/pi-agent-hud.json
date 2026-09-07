@@ -8,7 +8,7 @@
   "// tokenThreshold": 85,
 
   "// === Show / Hide Elements ===": "",
-  "// enabled": ["model", "project", "git", "thinking", "contextBar", "elapsed", "contextFiles", "skills", "extTools", "extCmds", "tokens", "cost", "plan5h", "planWeek", "toolStats", "runningTools", "runningAgents", "lastInput", "historyHint"],
+  "// enabled": ["model", "project", "git", "thinking", "contextBar", "elapsed", "contextFiles", "skills", "extTools", "extCmds", "tokens", "cost", "plan5h", "planWeek", "planMonth", "toolStats", "runningTools", "runningAgents", "lastInput", "historyHint"],
   "// disabled": ["extCmds"],
 
   "// === Debug ===": "",

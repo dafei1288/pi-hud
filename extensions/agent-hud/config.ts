@@ -30,6 +30,7 @@ export type HudElement =
 	| "rateLimit"      // Line 2: ⚡ 85% (Anthropic/OpenAI rate limit)
 	| "plan5h"         // Line 2: ⏳5h 42% ↻2h15m (coding plan 5-hour window)
 	| "planWeek"       // Line 2: 📅wk 18% ↻3d (coding plan weekly window)
+	| "planMonth"      // Line 2: 🗓mo 12% ↻12d (coding plan monthly window, GLM TIME_LIMIT)
 	| "toolStats"      // Line 2: ✓ Grep ×10
 	| "runningTools"   // Line 2: ◐ Edit (12s)
 	| "runningAgents"  // Line 2: ◐ agent (2m 15s)
@@ -69,6 +70,12 @@ export interface HudConfig {
 	 */
 	placement?: Record<string, Placement>;
 	/**
+	 * 把 费用/余额/5h/周/月限 抽离原行，单独聚成一条配额行（经典单列模式）。
+	 * 默认 undefined = 自动：omp 下启用、pi 下不启用（pi 历史布局不变）。
+	 * 显式 true/false 可覆盖两端默认。layout 网格模式不受影响（自行用 placement 摆放）。
+	 */
+	quotaRow?: boolean;
+	/**
 	 * 把 rate-limit 相关响应头 dump 到
 	 * ~/.pi/agent/pi-agent-hud-headers.jsonl 用于发现新字段。
 	 * 也可用环境变量 PI_HUD_DEBUG_HEADERS=1 开启。默认 false。
@@ -98,10 +105,11 @@ export function loadConfig(cwd: string): HudConfig {
 	};
 
 	const runtime = detectRuntime();
-	const roots = agentConfigRoots();
-	const globalRoots = runtime === "omp" ? roots : [...roots].reverse();
-	const projRoots = projectConfigRoots(cwd);
-	const projectOrder = runtime === "omp" ? projRoots : [...projRoots].reverse();
+	const roots = agentConfigRoots(); // [omp, pi]
+	const projRoots = projectConfigRoots(cwd); // [.omp, .pi]
+	// 后读覆盖先读：本运行时目录必须排在最后，否则 pi 配置会反过来压过 omp 配置。
+	const globalRoots = runtime === "omp" ? [...roots].reverse() : roots;
+	const projectOrder = runtime === "omp" ? [...projRoots].reverse() : projRoots;
 
 	const paths = [
 		...globalRoots.map((root) => join(root, "pi-agent-hud.json")),

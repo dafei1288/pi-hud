@@ -28,11 +28,11 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { KeyId } from "@mariozechner/pi-tui";
-import { installBubbleEditor } from "./bubble-editor.ts";
 import { loadConfig, type HudConfig } from "./config.ts";
 import { createHudFooter } from "./hud-footer.ts";
 import { UnifiedHudOverlay } from "./overlay.ts";
 import { QuotaService } from "./quota.ts";
+import { isOmpRuntime } from "./runtime.ts";
 import { registerTrackers, SessionState } from "./state.ts";
 
 export default function (pi: ExtensionAPI) {
@@ -122,6 +122,13 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.setEditorComponent(undefined);
 				ctx.ui.notify("Bubble editor off", "info");
 			} else {
+				// omp 的 coding-agent 根包不导出 CustomEditor（bubble 编辑器依赖它），
+				// 模块必须延迟加载，否则扩展在 omp 下连加载都会失败。
+				if (isOmpRuntime()) {
+					ctx.ui.notify("Bubble editor 仅支持 pi 运行时", "error");
+					return;
+				}
+				const { installBubbleEditor } = await import("./bubble-editor.ts");
 				uninstallBubble = installBubbleEditor(pi, ctx, quota);
 				bubbleActive = true;
 				ctx.ui.notify("Bubble editor on", "info");
@@ -139,8 +146,11 @@ export default function (pi: ExtensionAPI) {
 		if (ctx.hasUI) {
 			createHudFooter(pi, ctx, state, quota);
 
-			// 配置启用气泡编辑器
-			if (config.editor === "bubble" && !bubbleActive) {
+			// 配置启用气泡编辑器。bubble-editor.ts 顶层 import CustomEditor，而该导出
+			// 只存在于 pi 的 coding-agent 根包（omp 根/shim 均无）→ 平台专属模块，
+			// 必须延迟加载，否则静态 import 会让整个扩展在 omp 下加载失败。
+			if (config.editor === "bubble" && !bubbleActive && !isOmpRuntime()) {
+				const { installBubbleEditor } = await import("./bubble-editor.ts");
 				uninstallBubble = installBubbleEditor(pi, ctx, quota);
 				bubbleActive = true;
 			}

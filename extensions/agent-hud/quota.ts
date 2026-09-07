@@ -2,7 +2,7 @@
  * quota.ts — LLM 计费/额度共享服务
  *
  * 唯一数据源（single source of truth）：
- *  - 编码计划（订阅）配额：5h / 每周窗口（GLM / MiniMax / Kimi / Codex / Claude）
+ *  - 编码计划（订阅）配额：5h / 每周 / 每月窗口（GLM / MiniMax / Kimi / Codex / Claude）
  *  - 按量付费余额（DeepSeek 等）
  *  - Provider 响应头里的 rate limit（Anthropic / OpenAI）
  *
@@ -47,6 +47,8 @@ export interface PlanUsageInfo {
 	source: string;
 	fiveHour?: PlanWindowUsage;
 	weekly?: PlanWindowUsage;
+	/** 月度窗口（GLM Coding Plan 的 TIME_LIMIT，按月工具/次数配额） */
+	monthly?: PlanWindowUsage;
 	capturedAt: number;
 }
 
@@ -76,8 +78,8 @@ export interface PlanProviderSpec {
 	modelsJsonProvider?: string;
 	url: string;
 	headers: (key: string) => Record<string, string>;
-	/** 归一化响应 JSON → 5h/weekly 窗口；undefined = 无可用数据 */
-	parse: (json: any) => { fiveHour?: PlanWindowUsage; weekly?: PlanWindowUsage } | undefined;
+	/** 归一化响应 JSON → 5h/weekly/monthly 窗口；undefined = 无可用数据 */
+	parse: (json: unknown) => { fiveHour?: PlanWindowUsage; weekly?: PlanWindowUsage; monthly?: PlanWindowUsage } | undefined;
 }
 
 /** 余额 provider 的声明式描述 */
@@ -88,7 +90,7 @@ export interface BalanceProviderSpec {
 	modelsJsonProvider?: string;
 	url: string;
 	headers: (key: string) => Record<string, string>;
-	parse: (json: any) => BalanceInfo | undefined;
+	parse: (json: unknown) => BalanceInfo | undefined;
 }
 
 // ============================================================================
@@ -122,6 +124,26 @@ export function getHeader(headers: Record<string, string>, name: string): string
 		if (key.toLowerCase() === lower) return headers[key];
 	}
 	return undefined;
+}
+
+/** 把 unknown JSON 收窄成可索引对象；非对象（含数组/null）返回 undefined。轮询响应形状由各 provider 自行探测。 */
+function asRecord(v: unknown): Record<string, unknown> | undefined {
+	return typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
+}
+
+/** 数值字段宽松转换（接口可能返回字符串数字）；无法解析 → undefined */
+function num(v: unknown): number | undefined {
+	const n = Number(v);
+	return Number.isNaN(n) ? undefined : n;
+}
+
+/** Kimi 窗口时长 + 时间单位 → 分钟数（如 300 MINUTES = 5h、7 DAYS = 1 周） */
+function toMinutes(dur: number | undefined, unit: string | undefined): number | undefined {
+	if (dur == null) return undefined;
+	const u = (unit || "").toUpperCase();
+	if (u.includes("DAY")) return dur * 1440;
+	if (u.includes("HOUR")) return dur * 60;
+	return dur; // MINUTES（默认）
 }
 
 // ============================================================================
@@ -159,32 +181,40 @@ function resolveKey(spec: { envKeys: string[]; authNames: string[]; modelsJsonPr
 // ============================================================================
 
 export const PLAN_PROVIDERS: PlanProviderSpec[] = [
+
 	{
-		// GLM Coding Plan (z.ai 国内版): GET /api/monitor/usage/quota/limit
-		// TOKENS_LIMIT entries: unit 3 = hour-window (number = hours, e.g. 5h), unit 6 = day-window (number = days, e.g. 7d)
-		providers: ["zai-coding-cn"],
-		envKeys: ["ZAI_CODING_CN_API_KEY"],
-		authNames: ["zai-coding-cn"],
+		// GLM Coding Plan (智谱国内版): GET /api/monitor/usage/quota/limit
+		// TOKENS_LIMIT: unit 3 = 小时窗（number = 小时数, e.g. 5h）、unit 6 = 周窗（number = 周数, e.g. 1 周）
+		// TIME_LIMIT: unit 5 = 月窗（number = 月数）——search/zread 等工具的月度次数配额
+		// provider id：pi 内置为 zai-coding-cn；omp 的 GLM Coding Plan 为 zhipu-coding-plan
+		providers: ["zai-coding-cn", "zhipu-coding-plan"],
+		envKeys: ["ZAI_CODING_CN_API_KEY", "ZHIPU_CODING_PLAN_API_KEY"],
+		authNames: ["zai-coding-cn", "zhipu-coding-plan"],
 		url: "https://open.bigmodel.cn/api/monitor/usage/quota/limit",
 		headers: (key) => ({ Authorization: `Bearer ${key}` }),
 		parse: (json) => {
-			const limits = json?.data?.limits;
+			const limits = asRecord(asRecord(json)?.data)?.limits;
 			if (!Array.isArray(limits)) return undefined;
 			let fiveHour: PlanWindowUsage | undefined;
 			let weekly: PlanWindowUsage | undefined;
-			for (const l of limits) {
-				if (l?.type !== "TOKENS_LIMIT") continue;
+			let monthly: PlanWindowUsage | undefined;
+			for (const item of limits) {
+				const l = asRecord(item);
+				if (!l) continue;
 				const w: PlanWindowUsage = {
 					usedPercent: typeof l.percentage === "number" ? l.percentage : 0,
 					resetAt: typeof l.nextResetTime === "number" ? l.nextResetTime : undefined,
 				};
-				if (l.unit === 3) {
-					fiveHour = { ...w, windowMinutes: (l.number || 5) * 60 };
-				} else if (l.unit === 6) {
-					weekly = { ...w, windowMinutes: (l.number || 1) * 7 * 24 * 60 };
+				const number = typeof l.number === "number" ? l.number : undefined;
+				if (l.type === "TOKENS_LIMIT" && l.unit === 3) {
+					fiveHour = { ...w, windowMinutes: (number || 5) * 60 };
+				} else if (l.type === "TOKENS_LIMIT" && l.unit === 6) {
+					weekly = { ...w, windowMinutes: (number || 1) * 7 * 24 * 60 };
+				} else if (l.type === "TIME_LIMIT" && l.unit === 5) {
+					monthly = { ...w, windowMinutes: (number || 1) * 30 * 24 * 60 };
 				}
 			}
-			return fiveHour || weekly ? { fiveHour, weekly } : undefined;
+			return fiveHour || weekly || monthly ? { fiveHour, weekly, monthly } : undefined;
 		},
 	},
 	{
@@ -197,15 +227,19 @@ export const PLAN_PROVIDERS: PlanProviderSpec[] = [
 		url: "https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains",
 		headers: (key) => ({ Authorization: `Bearer ${key}` }),
 		parse: (json) => {
-			const general = json?.model_remains?.find((m: any) => m?.model_name === "general") ?? json?.model_remains?.[0];
+			const remains = asRecord(json)?.model_remains;
+			if (!Array.isArray(remains)) return undefined;
+			const general = asRecord(remains.find((m) => asRecord(m)?.model_name === "general")) ?? asRecord(remains[0]);
 			if (!general) return undefined;
-			const fiveHour: PlanWindowUsage | undefined = typeof general.current_interval_remaining_percent === "number" ? {
-				usedPercent: 100 - general.current_interval_remaining_percent,
+			const intervalPct = general.current_interval_remaining_percent;
+			const fiveHour: PlanWindowUsage | undefined = typeof intervalPct === "number" ? {
+				usedPercent: 100 - intervalPct,
 				windowMinutes: 300,
 				resetAt: typeof general.end_time === "number" ? general.end_time : undefined,
 			} : undefined;
-			const weekly: PlanWindowUsage | undefined = typeof general.current_weekly_remaining_percent === "number" ? {
-				usedPercent: 100 - general.current_weekly_remaining_percent,
+			const weeklyPct = general.current_weekly_remaining_percent;
+			const weekly: PlanWindowUsage | undefined = typeof weeklyPct === "number" ? {
+				usedPercent: 100 - weeklyPct,
 				windowMinutes: 7 * 24 * 60,
 				resetAt: typeof general.weekly_end_time === "number" ? general.weekly_end_time : undefined,
 			} : undefined;
@@ -224,12 +258,8 @@ export const PLAN_PROVIDERS: PlanProviderSpec[] = [
 		url: "https://api.kimi.com/coding/v1/usages",
 		headers: (key) => ({ Authorization: `Bearer ${key}` }),
 		parse: (json) => {
-			const row = (d: any): PlanWindowUsage | undefined => {
-				if (!d || typeof d !== "object") return undefined;
-				const num = (v: any): number | undefined => {
-					const n = Number(v);
-					return !Number.isNaN(n) ? n : undefined;
-				};
+			const row = (d: Record<string, unknown> | undefined): PlanWindowUsage | undefined => {
+				if (!d) return undefined;
 				const limit = num(d.limit);
 				const used = num(d.used)
 					?? (limit != null ? (() => { const r = num(d.remaining); return r != null ? Math.max(0, limit - r) : undefined; })() : undefined);
@@ -240,22 +270,23 @@ export const PLAN_PROVIDERS: PlanProviderSpec[] = [
 				const usedPercent = limit && limit > 0 ? ((used ?? 0) / limit) * 100 : 0;
 				return { usedPercent, resetAt };
 			};
-			const toMinutes = (dur?: number, unit?: string): number | undefined => {
-				if (typeof dur !== "number") return undefined;
-				const u = (unit || "").toUpperCase();
-				if (u.includes("DAY")) return dur * 1440;
-				if (u.includes("HOUR")) return dur * 60;
-				return dur; // MINUTES（默认）
-			};
 			let fiveHour: PlanWindowUsage | undefined;
 			let weekly: PlanWindowUsage | undefined;
-			const topUsage = row(json?.usage);
+			const topUsage = row(asRecord(asRecord(json)?.usage));
 			if (topUsage) weekly = { ...topUsage, windowMinutes: 7 * 24 * 60 };
-			if (Array.isArray(json?.limits)) {
-				for (const item of json.limits) {
-					const w = row(item?.detail ?? item);
-					if (!w) continue;
-					const mins = toMinutes(item?.window?.duration ?? item?.duration, item?.window?.timeUnit ?? item?.timeUnit);
+			const limits = asRecord(json)?.limits;
+			if (Array.isArray(limits)) {
+				for (const item of limits) {
+					const it = asRecord(item);
+					const w = row(asRecord(it?.detail) ?? it);
+					if (!w || !it) continue;
+					const window = asRecord(it.window);
+					const duration = window?.duration ?? it.duration;
+					const timeUnit = window?.timeUnit ?? it.timeUnit;
+					const mins = toMinutes(
+						typeof duration === "number" ? duration : undefined,
+						typeof timeUnit === "string" ? timeUnit : undefined,
+					);
 					if (mins && mins <= 24 * 60) {
 						fiveHour ??= { ...w, windowMinutes: mins };
 					} else {
@@ -282,17 +313,20 @@ export const BALANCE_PROVIDERS: BalanceProviderSpec[] = [
 		url: "https://api.deepseek.com/user/balance",
 		headers: (key) => ({ Authorization: `Bearer ${key}` }),
 		parse: (json) => {
-			if (!json?.is_available) return undefined;
-			const info = json?.balance_infos?.[0];
+			const root = asRecord(json);
+			if (!root?.is_available) return undefined;
+			const infos = root.balance_infos;
+			const info = Array.isArray(infos) ? asRecord(infos[0]) : undefined;
 			if (!info) return undefined;
-			const total = parseFloat(info.total_balance);
+			const total = typeof info.total_balance === "string" ? parseFloat(info.total_balance) : NaN;
 			if (isNaN(total)) return undefined;
-			const currency = info.currency === "CNY" ? "¥" : info.currency === "USD" ? "$" : info.currency;
+			const currencyRaw = typeof info.currency === "string" ? info.currency : "";
+			const currency = currencyRaw === "CNY" ? "¥" : currencyRaw === "USD" ? "$" : currencyRaw;
 			return {
 				provider: "deepseek",
 				label: `${currency}${total.toFixed(2)}`,
 				value: total,
-				currency: info.currency,
+				currency: currencyRaw,
 				capturedAt: Date.now(),
 			};
 		},
